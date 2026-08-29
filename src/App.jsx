@@ -74,7 +74,7 @@ function isHoliday(date, holidays, state) {
 }
 function isWorkingDay(date, holidays, state) {
   const day = date.getDay();
-  if (day === 0 || day === 6) return false;
+  if (day === 0) return false;
   if (isHoliday(date, holidays, state)) return false;
   return true;
 }
@@ -2512,7 +2512,7 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
       </div>
       <div className="rounded-xl border p-4 text-xs flex items-start gap-2" style={{ borderColor: LINE, background: TEAL_SOFT, color: TEAL }}>
         <Filter size={14} className="mt-0.5 shrink-0" />
-        Working days exclude Saturdays, Sundays, and every date listed in the Holiday Calendar. Stage dates are cumulative — each stage's gap is counted from the previous stage (or the document date for Stage 1).
+        Working days exclude Sundays and every date listed in the Holiday Calendar. Stage dates are cumulative — each stage's gap is counted from the previous stage (or the document date for Stage 1).
       </div>
 
       <div>
