@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { browserLocalPersistence, onAuthStateChanged, setPersistence, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { browserLocalPersistence, EmailAuthProvider, onAuthStateChanged, reauthenticateWithCredential, setPersistence, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth, FIREBASE_LOGIN_EMAIL } from "./firebase";
 import { agentStore, customerStore, phoneStore, quotationStore, templateStore } from "./firestore";
 
@@ -164,7 +164,16 @@ const DEFAULT_HOLIDAYS = [
 ];
 const DEFAULT_AGENTS = [];
 const LEGACY_SAMPLE_AGENTS = new Set(["Haziq Idris", "Farah Aziz", "Wei Jian Tan", "Priya Nair"]);
+const DEFAULT_DEFAULT_AGENT = "";
 const DEFAULT_PHONES = [];
+const normalizeCategoryValue = (value) => {
+  const category = String(value || "").trim();
+  if (category.toLowerCase() === "payroll") return "Payroll";
+  if (category.toLowerCase() === "account") return "Account";
+  if (/payroll/i.test(category) || /sql\s*payroll/i.test(category)) return "Payroll";
+  if (/account/i.test(category) || /sql\s*account/i.test(category)) return "Account";
+  return "";
+};
 const DEFAULT_SCHEDULES = {
   quotation: [
     { id: "q1", stage: 1, code: "day3", label: "1st Follow-up", tag: "Day 3", workingDaysAfterPrevious: 3 },
@@ -209,7 +218,7 @@ const QUOTATION_FIELDS = [
   { key: "contactName", label: "Person in Charge", required: false, guesses: ["person in charge", "contact person", "contact", "attn", "attention"] },
   { key: "phone", label: "Phone Number", required: false, guesses: ["phone", "contact number", "tel", "mobile", "phone number"] },
   { key: "docNo", label: "Document Number", required: true, guesses: ["quotation no", "quotation no.", "qt no", "doc no", "document no", "document number"] },
-  { key: "amount", label: "Quotation Total", required: true, guesses: ["quotation total", "total amount", "amount", "total", "value", "grand total"] },
+  { key: "amount", label: "Quotation Total (RM)", required: true, guesses: ["quotation total", "total amount", "amount", "total", "value", "grand total"] },
 ];
 function guessMapping(headers, fields) {
   const map = {};
@@ -264,36 +273,146 @@ async function extractQuotationRows(file) {
   const dateOnLabelLine = lines.find((line) => /^Date\s*[:#-]?\s*/i.test(line) && datePattern.test(line))?.match(datePattern)?.[0] || "";
   const dateRaw = dateOnLabelLine
     || (dateLabelIndex >= 0 ? lines.slice(dateLabelIndex + 1, dateLabelIndex + 4).find((line) => datePattern.test(line))?.match(datePattern)?.[0] || "" : "");
-  const companyPattern = /(?:SDN\.?\s+BHD\.?|ENTERPRISE|SDN\.?\s+BHd|TRADING|HOLDINGS|CORPORATION|CORP\.?|LIMITED|LTD\.?|PLT)\b/i;
-  const amsIndex = lines.findIndex((line) => /AMS\s+SOFTWARE\s+SDN\.?\s+BHD\.?/i.test(line));
+  const companyPattern = /(?:SDN\.?\s*BHD\.?|ENTERPRISE|ENTERPRIS|SERVICES?|SERVICE|SDN\.?\s*BHd|TRADING|HOLDINGS|CORPORATION|CORP\.?|LIMITED|LTD\.?|PTE\.?\s*LTD\.?|PLT)\b/i;
+  const sellerPattern = /AMS\s+SOFTWARE\s+SDN\.?\s+BHD\.?|ACCOUNTING\s+MADE\s+SIMPLE/i;
+  const paymentTermPattern = /^(?:C\.\s*O\.\s*D\.?|30\s*DAYS?|45\s*DAYS?|60\s*DAYS?)$/i;
+  const postcodePattern = /\b\d{4,5}\b/;
+  const addressKeywords = /(jalan|jalan\s|lorong|kampung|lot|plot|no\.|taman|bandar|township|off|persiaran|kawasan|bukit|street|road|estate)/i;
+  const isMostlyUppercaseLine = (value = "") => {
+    const letters = value.replace(/[^A-Za-z]/g, "");
+    if (letters.length < 4) return false;
+    const upper = [...letters].filter((char) => /[A-Z]/.test(char)).length;
+    const lower = [...letters].filter((char) => /[a-z]/.test(char)).length;
+    return upper >= letters.length * 0.8 && lower === 0;
+  };
+  const quotationNoIndex = lines.findIndex((line) => /quotation\s*no\.?/i.test(line));
+  const itemIndex = lines.findIndex((line) => /^Item\b/i.test(line));
+  const customerIntroIndex = lines.findIndex((line) => /^(To|Dear|Tel\s*:|Phone\s*:|Attention|Attn)\b/i.test(line));
+  const customerBlockStart = Math.max(quotationNoIndex >= 0 ? quotationNoIndex + 1 : 0, customerIntroIndex >= 0 ? customerIntroIndex : 0);
+  const firstCustomerBlockCompany = (() => {
+    const telIndex = lines.findIndex((line) => /^(Tel\s*:|Phone\s*:)/i.test(line));
+    if (telIndex < 0) return "";
+    const candidate = [...lines.slice(0, telIndex)].reverse().find((line) => {
+      if (!line || /^(?:To|Dear|Attention|Attn|Tel\s*:|Phone\s*:|Fax\s*:|Email\s*:|Website\s*:)/i.test(line)) return false;
+      if (/^(?:No\.|Lot|Block|Jalan|Lorong|Kampung|Persiaran|Taman|Bandar|Street|Road|Off|Kawasan|Selangor|Wilayah|Malaysia|P\.O\.|P\.O)/i.test(line)) return false;
+      if (postcodePattern.test(line)) return false;
+      if (addressKeywords.test(line)) return false;
+      return line.length > 2 && !/^(?:C\.O\.D|30\s*DAYS?|45\s*DAYS?|60\s*DAYS?)$/i.test(line);
+    });
+    return (candidate || "").trim();
+  })();
+
   const companyCandidates = lines
     .map((line, index) => ({ line: line.replace(/^\s*(?:company\s*name|customer)\s*[:#-]?\s*/i, "").trim(), index }))
-    .filter(({ line, index }) => index > amsIndex && companyPattern.test(line) && !/AMS\s+SOFTWARE\s+SDN\.?\s+BHD\.?/i.test(line))
+    .filter(({ line, index }) => {
+      if (!line || line.length < 3) return false;
+      if (itemIndex >= 0 && index >= itemIndex) return false;
+      if (sellerPattern.test(line)) return false;
+      if (paymentTermPattern.test(line)) return false;
+      const looksLikeCompany = companyPattern.test(line) || isMostlyUppercaseLine(line);
+      if (!looksLikeCompany) return false;
+      const beforeCustomerBlock = index <= customerBlockStart && !/^(To|Dear|Tel\s*:|Phone\s*:|Attention|Attn)/i.test(line);
+      if (beforeCustomerBlock) {
+        const nextLine = lines[index + 1] || "";
+        const adjacentAddress = postcodePattern.test(nextLine) || addressKeywords.test(nextLine) || /^(?:No\.|Lot|Block|Jalan|Lorong|Kampung|Persiaran|Taman|Bandar|Street|Road|Off|Kawasan)/i.test(nextLine);
+        if (!adjacentAddress) return false;
+      }
+
+      const neighborhood = lines.slice(Math.max(0, index - 4), Math.min(lines.length, index + 8)).join(" ");
+      const isContextualCustomer = /(?:^|\s)(To|Dear|Tel\s*:|Phone\s*:|Attention|Attn)\b/i.test(neighborhood)
+        || postcodePattern.test(neighborhood)
+        || addressKeywords.test(neighborhood);
+
+      return isContextualCustomer;
+    })
     .map(({ line }) => line);
-  const company = companyCandidates[0] || "";
-  const dearIndex = lines.findIndex((line) => /^Dear\s*$/i.test(line));
-  const contactName = (dearIndex >= 0 ? lines[dearIndex + 1] || "" : "")
-    || matchValue(/\bDear\s+([^\n,;:]+)(?:\s*[,;:]|\s+\b(?:Sir|Madam)\b)/i)
-    || matchValue(/\bDear\s+([^\n]+)/i);
+
+  const company = companyCandidates
+    .map((candidate) => {
+      const idx = lines.findIndex((line) => line === candidate);
+      if (idx === -1) return { candidate: "", distance: Number.MAX_SAFE_INTEGER, idx: Number.MAX_SAFE_INTEGER };
+      const addressGap = lines.slice(idx + 1, Math.min(lines.length, idx + 8)).findIndex((nextLine) => {
+        if (!nextLine) return false;
+        return postcodePattern.test(nextLine) || addressKeywords.test(nextLine) || /^(?:No\.|Lot|Block|Jalan|Lorong|Kampung|Persiaran|Taman|Bandar|Street|Road|Off|Kawasan)/i.test(nextLine);
+      });
+      const neighborhood = lines.slice(Math.max(0, idx - 5), Math.min(lines.length, idx + 12)).join(" ");
+      const hasContext = postcodePattern.test(neighborhood) || /\b(?:Tel|Phone|Dear)\b/i.test(neighborhood) || addressKeywords.test(neighborhood) || isMostlyUppercaseLine(candidate);
+      return {
+        candidate,
+        distance: addressGap >= 0 ? addressGap : hasContext ? 20 : Number.MAX_SAFE_INTEGER,
+        idx,
+      };
+    })
+    .sort((a, b) => a.distance - b.distance || a.idx - b.idx)
+    .find((item) => item.candidate)?.candidate || companyCandidates[0] || firstCustomerBlockCompany || "";
+
+  const extractDearContactName = () => {
+    const dearIndex = lines.findIndex((line) => /^Dear\b/i.test(line));
+    const directCandidate = dearIndex >= 0 ? (lines[dearIndex + 1] || "") : "";
+    const regexCandidate = matchValue(/\bDear\s+([^\n,;:]+?)(?:\s*[,;:]|\s+\b(?:Sir|Madam)\b|$)/i) || "";
+    const candidate = (directCandidate || regexCandidate).trim();
+    if (!candidate) return "";
+    const cleaned = candidate
+      .replace(/^(?:Mr|Mrs|Ms|Mdm|Miss|Dr)\.?\s+/i, "")
+      .replace(/\s*[-–—]+\s*$/g, "")
+      .trim();
+    if (!cleaned) return "";
+    if (/^(?:C\.\s*O\.\s*D\.?|30\s*DAYS?|45\s*DAYS?|60\s*DAYS?|Thank\s+you\s+for\s+your\s+enquiry\.?|We\s+are\s+pleased\s+to\s+submit\s+our\s+quote\s+as\s+follows\.?)/i.test(cleaned)) return "";
+    if (paymentTermPattern.test(cleaned)) return "";
+    if (sellerPattern.test(cleaned)) return "";
+    if (companyPattern.test(cleaned)) return "";
+    if (/\b(?:Thank\s+you|We\s+are\s+pleased|for\s+your\s+enquiry|quote\s+as\s+follows)\b/i.test(cleaned)) return "";
+    if ((cleaned.match(/[A-Za-z]/g) || []).length < 2) return "";
+    return cleaned;
+  };
+  const contactName = extractDearContactName();
   const phone = matchValue(/\bTel\s*[:#-]?\s*([+\d][\d\s().-]{6,})/i);
   const docNo = matchValue(/\bQuotation\s+No\.?\s*[:#-]?\s*([A-Z0-9][A-Z0-9/-]*)/i);
   const amount = matchValue(/\bTotal\s+Payable\s+Incl\.?\s+Tax\s*:\s*\(?RM\)?\s*([0-9,]+(?:\.\d{1,2})?)/i);
+  const itemDescriptionIndex = lines.findIndex((line) => /^Item\s*Description\b/i.test(line) || /^Description\b/i.test(line));
+  const itemDescriptionText = (() => {
+    if (itemDescriptionIndex < 0) return "";
+    const collected = [];
+    for (let i = itemDescriptionIndex + 1; i < lines.length; i += 1) {
+      const line = String(lines[i] || "").trim();
+      if (!line) continue;
+      if (/^(?:Item|Qty|Package|Unit|Unit\s+Price|Date|Disc|Page\s+No|Amount|Total|Quotation\s+No\.|Term|Document\s+Number|Document\s+Date)/i.test(line)) break;
+      if (/sql|payroll|account(?:ing)?|support|maintenance|contract|invoice|e-invoice/i.test(line)) collected.push(line);
+    }
+    return collected.join(" ");
+  })();
   const row = {
     "Document Date": dateRaw,
-    "Company Name": company,
+    "Company Name": company || contactName || "",
     "Person in Charge": contactName,
     Phone: phone,
     "Document Number": docNo,
-    "Quotation Total": amount,
+    "Quotation Total (RM)": amount,
   };
   if (Object.values(row).every((value) => !String(value || "").trim())) throw new Error("No readable quotation fields found");
-  return { rows: [row], companyCandidates: [...new Set(companyCandidates)] };
+  return { rows: [row], companyCandidates: [...new Set(companyCandidates)], categoryText: itemDescriptionText || text };
 }
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return NaN;
   if (typeof value === "number") return value;
   const cleaned = String(value).replace(/[^0-9.\-]/g, "");
   return cleaned ? parseFloat(cleaned) : NaN;
+}
+function detectCategoryFromText(text = "") {
+  const content = String(text || "");
+  const normalized = content.toLowerCase();
+
+  const payrollHit = /sql\s*payroll|payroll\s*sql|\bpayroll\b/i.test(content);
+  const accountHit = /sql\s*account(?:ing)?|account(?:ing)?\s*sql|\baccount(?:ing)?\b/i.test(content);
+
+  if (payrollHit && !accountHit) return "Payroll";
+  if (accountHit && !payrollHit) return "Account";
+  if (payrollHit && accountHit) {
+    if (normalized.indexOf("payroll") < normalized.indexOf("account")) return "Payroll";
+    return "Account";
+  }
+
+  return "";
 }
 
 /* ------------------------------ UI atoms ------------------------------ */
@@ -358,9 +477,33 @@ function IconBtn({ icon: Icon, label, onClick, danger }) {
 function DeleteConfirmModal({ request, onCancel, onConfirm }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const submit = () => {
-    if (password === VALID_PASSWORD) { onConfirm(); setPassword(""); setError(""); }
-    else setError("Incorrect password.");
+  const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  useEffect(() => {
+    setPassword("");
+    setError("");
+    setShowPassword(false);
+  }, []);
+  const submit = async () => {
+    if (!password.trim()) { setError("Please enter your password to continue."); return; }
+    const currentUser = auth.currentUser;
+    if (!currentUser || !currentUser.email) {
+      setError("No active signed-in account found.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const credential = EmailAuthProvider.credential(currentUser.email, password);
+      await reauthenticateWithCredential(currentUser, credential);
+      onConfirm();
+      setPassword("");
+      setError("");
+      setShowPassword(false);
+    } catch (err) {
+      setError("Incorrect password.");
+    } finally {
+      setSubmitting(false);
+    }
   };
   const handleKeyDown = (e) => { if (e.key === "Enter") submit(); };
   return (
@@ -376,20 +519,29 @@ function DeleteConfirmModal({ request, onCancel, onConfirm }) {
           <div className="flex items-center gap-2 rounded-lg px-3 py-2.5 border" style={{ borderColor: error ? RED : LINE }}>
             <Lock size={13} style={{ color: "#9A9AA0" }} />
             <input
-              type="password"
+              type={showPassword ? "text" : "password"}
               autoFocus
+              autoComplete="new-password"
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="none"
+              data-lpignore="true"
+              data-form-type="other"
               value={password}
               onChange={(e) => { setPassword(e.target.value); setError(""); }}
               onKeyDown={handleKeyDown}
               placeholder="Password"
               className="flex-1 text-sm outline-none bg-transparent"
             />
+            <button type="button" onClick={() => setShowPassword((v) => !v)} className="text-[10px] font-medium shrink-0" style={{ color: "#6E7189" }}>
+              {showPassword ? "Hide" : "Show"}
+            </button>
           </div>
           {error && <div className="text-xs mt-1 flex items-center gap-1" style={{ color: RED }}><AlertCircle size={11} /> {error}</div>}
         </div>
         <div className="flex justify-end gap-2 mt-1">
           <button onClick={onCancel} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
-          <button onClick={submit} className="text-xs font-medium px-3.5 py-2 rounded-lg" style={{ background: RED, color: "white" }}>Delete</button>
+          <button onClick={submit} disabled={submitting} className="text-xs font-medium px-3.5 py-2 rounded-lg disabled:opacity-60" style={{ background: RED, color: "white" }}>{submitting ? "Verifying…" : "Delete"}</button>
         </div>
       </div>
     </div>
@@ -430,6 +582,7 @@ function Console({ appName, setAppName, onSignOut }) {
   const [quotations, setQuotations] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [agents, setAgents] = useState(DEFAULT_AGENTS);
+  const [defaultAgentName, setDefaultAgentName] = useState(DEFAULT_DEFAULT_AGENT);
   const [phones, setPhones] = useState(DEFAULT_PHONES);
   const [importHistory, setImportHistory] = useState([]);
   const [activeFollowup, setActiveFollowup] = useState(null);
@@ -458,6 +611,7 @@ function Console({ appName, setAppName, onSignOut }) {
           if (data.operatingState) setOperatingState(data.operatingState);
           if (data.holidays) setHolidays(data.holidays);
           if (data.schedules) setSchedules(data.schedules);
+          if (data.defaultAgentName !== undefined) setDefaultAgentName(data.defaultAgentName);
           const hasLegacySample = data.importHistory?.some((batch) => String(batch.batchId || "").startsWith("BATCH-SEED"));
           if (hasLegacySample) {
             setImportHistory([]);
@@ -514,7 +668,7 @@ function Console({ appName, setAppName, onSignOut }) {
 
   useEffect(() => {
     if (!dataLoaded) return;
-    const payload = { appName, operatingState, holidays, schedules, customers, importHistory };
+    const payload = { appName, operatingState, holidays, schedules, customers, importHistory, defaultAgentName };
     const t = setTimeout(() => {
       try {
         window.storage.set(STORAGE_KEY, JSON.stringify(payload)).catch(() => {});
@@ -661,10 +815,11 @@ function Console({ appName, setAppName, onSignOut }) {
   }
 
   // ---- PDF quotation and customer import merge logic ----
-  function commitImport({ docType, fileName, rows, resolutions, agentName }) {
+  function commitImport({ docType, fileName, rows, resolutions, agentName, categoryOverride }) {
     const batchId = uid("BATCH-");
     const importDate = new Date().toISOString();
     let newCount = 0, updatedCount = 0, skippedCount = 0;
+    const fallbackCategory = normalizeCategoryValue(categoryOverride) || "Account";
 
     if (docType === "Customer") {
       setCustomers((prev) => {
@@ -705,7 +860,7 @@ function Console({ appName, setAppName, onSignOut }) {
             next[existingIdx] = {
               ...next[existingIdx],
               company: row.company, contactName: row.contactName, phone: row.phone, email: row.email,
-              category: row.category || next[existingIdx].category, amount: row.amount, date: row.date,
+              category: normalizeCategoryValue(row.category) || normalizeCategoryValue(next[existingIdx].category) || fallbackCategory, amount: row.amount, date: row.date,
               staff: row.staff || next[existingIdx].staff, assignedAgent: agentName || row.agentName || next[existingIdx].assignedAgent || next[existingIdx].staff, sendingPhoneId: row.phoneId || next[existingIdx].sendingPhoneId || null, docStatus: row.docStatus || next[existingIdx].docStatus,
               source: "PDF Quotation Import", importDate, importFileName: fileName, importBatchId: batchId,
               // follow-up progress (completedStages / manualStatus / notes / history / rescheduleDate) preserved untouched
@@ -718,7 +873,7 @@ function Console({ appName, setAppName, onSignOut }) {
           const id = existingIdx !== -1 && resolution === "new" ? `${key}-${uid("DUP")}` : key;
           const rec = {
             id, docType, docNo: row.docNo, company: row.company, contactName: row.contactName, phone: row.phone, email: row.email,
-            category: row.category || "Account", date: row.date, amount: row.amount, staff: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", assignedAgent: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", sendingPhoneId: row.phoneId || null, docStatus: row.docStatus || "Open",
+            category: normalizeCategoryValue(row.category) || fallbackCategory, date: row.date, amount: row.amount, staff: agentName || row.agentName || row.staff || defaultAgentName || agents.find((agent) => agent.active)?.name || "Unassigned", assignedAgent: agentName || row.agentName || row.staff || defaultAgentName || agents.find((agent) => agent.active)?.name || "Unassigned", sendingPhoneId: row.phoneId || null, docStatus: row.docStatus || "Open",
             source: "PDF Quotation Import", importDate, importFileName: fileName, importBatchId: batchId,
             completedStages: 0, manualStatus: null, notes: "", rescheduleDate: null,
             history: seedHistory(row.date, 0, stages, holidays, docType, operatingState),
@@ -800,7 +955,7 @@ function Console({ appName, setAppName, onSignOut }) {
           )}
           {page === "import" && (
             <ImportPage schedules={schedules} holidays={holidays} presetType={importPresetType} setPresetType={setImportPresetType}
-              existingQuotations={quotations} agents={agents} onCommit={commitImport} />
+              existingQuotations={quotations} agents={agents} defaultAgentName={defaultAgentName} onCommit={commitImport} />
           )}
           {page === "customers" && <CustomersPage allDocs={allDocs} customers={customers} onDeleteCustomer={deleteCustomer} onBulkDeleteCustomers={bulkDeleteCustomers} onOpenCustomerDocs={(company, name) => setCustomerDrill({ company, name })} />}
           {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={setActiveFollowup} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} />}
@@ -808,7 +963,7 @@ function Console({ appName, setAppName, onSignOut }) {
           {page === "holidays" && <HolidaysPage holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} />}
           {page === "importhistory" && <ImportHistoryPage importHistory={importHistory} appName={appName} onOpenBatch={setBatchDrill} />}
           {page === "reports" && <ReportsPage allDocs={allDocs} />}
-          {page === "settings" && <SettingsPage schedules={schedules} setSchedules={setSchedules} appName={appName} setAppName={setAppName} agents={agents} setAgents={setAgents} phones={phones} setPhones={setPhones} onResetData={resetToSampleData} onSaved={showToast} />}
+          {page === "settings" && <SettingsPage schedules={schedules} setSchedules={setSchedules} appName={appName} setAppName={setAppName} agents={agents} setAgents={setAgents} defaultAgentName={defaultAgentName} setDefaultAgentName={setDefaultAgentName} phones={phones} setPhones={setPhones} onResetData={resetToSampleData} onSaved={showToast} />}
         </div>
       </main>
 
@@ -1756,7 +1911,7 @@ function HolidaysPage({ holidays, setHolidays, operatingState, setOperatingState
 }
 
 /* ------------------------------ Import Data page ------------------------------ */
-function ImportPage({ schedules, holidays, presetType, setPresetType, existingQuotations, agents, onCommit }) {
+function ImportPage({ schedules, holidays, presetType, setPresetType, existingQuotations, agents, defaultAgentName, onCommit }) {
   const [step, setStep] = useState("upload"); // upload | importing | preview | duplicates | confirm | failed | done
   const [fileName, setFileName] = useState("");
   const [rawRows, setRawRows] = useState([]); // array of objects keyed by original header
@@ -1770,8 +1925,13 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
   const [fileError, setFileError] = useState("");
   const [importingLabel, setImportingLabel] = useState("Reading file...");
   const [dragActive, setDragActive] = useState(false);
-  const [importAgent, setImportAgent] = useState("");
+  const [importAgent, setImportAgent] = useState(defaultAgentName || "");
+  const [importCategory, setImportCategory] = useState("Account");
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    setImportAgent(defaultAgentName || "");
+  }, [defaultAgentName]);
 
   const isCustomer = false;
   const fields = QUOTATION_FIELDS;
@@ -1779,7 +1939,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
   const keyLabel = "Document";
   const targetLabel = "Quotations";
 
-  const reset = () => { setStep("upload"); setFileName(""); setRawRows([]); setHeaders([]); setMapping({}); setValidRows([]); setErrorRows([]); setDuplicates([]); setResolutions({}); setResult(null); setFileError(""); if (fileInputRef.current) fileInputRef.current.value = ""; };
+  const reset = () => { setStep("upload"); setFileName(""); setRawRows([]); setHeaders([]); setMapping({}); setValidRows([]); setErrorRows([]); setDuplicates([]); setResolutions({}); setResult(null); setFileError(""); setImportAgent(defaultAgentName || ""); setImportCategory("Account"); if (fileInputRef.current) fileInputRef.current.value = ""; };
 
   function handleFile(file) {
     const ext = file.name.split(".").pop().toLowerCase();
@@ -1799,10 +1959,12 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
           ...row,
           "Document Date": parseDocumentDate(row["Document Date"]) || ymd(new Date()),
         }));
+        const detectedCategory = detectCategoryFromText(extracted.categoryText || extracted.companyCandidates?.join(" ") || JSON.stringify(rows)) || "Account";
         const hdrs = Object.keys(rows[0]);
         setRawRows(rows);
         setHeaders(hdrs);
         setMapping(guessMapping(hdrs, fields));
+        setImportCategory(detectedCategory);
         setStep("preview");
       } catch (err) {
         setFileError(`Could not read "${file.name}". The PDF may be scanned, password-protected, or have no selectable text.`);
@@ -1820,8 +1982,8 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
       rawRows.forEach((row, i) => {
         const get = (key) => (mapping[key] ? row[mapping[key]] : "");
         const company = String(get("company") || "").trim();
-        const categoryRaw = String(get("category") || "").trim();
-        const category = ["Account", "Payroll"].includes(categoryRaw) ? categoryRaw : "";
+        const categoryRaw = normalizeCategoryValue(String(get("category") || ""));
+        const category = categoryRaw || normalizeCategoryValue(importCategory) || "Account";
 
         if (isCustomer) {
           const issues = [];
@@ -1849,7 +2011,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
           rowIndex: i + 2, keyValue: docNo, docNo, date: dateYMD, company, contactName: String(get("contactName") || "").trim(),
           phone: String(get("phone") || "").trim(), email: String(get("email") || "").trim(),
           category, amount: isNaN(amount) ? 0 : amount, docStatus: String(get("docStatus") || "").trim(), staff: String(get("staff") || "").trim(),
-          categoryMissing: !category,
+          categoryMissing: !normalizeCategoryValue(String(get("category") || "")),
         };
         if (issues.length) errors.push({ ...rec, issues });
         else valid.push(rec);
@@ -1878,7 +2040,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
     setStep("importing");
     setTimeout(() => {
       try {
-        const res = onCommit({ docType: presetType, fileName, rows: validRows, resolutions, agentName: importAgent });
+        const res = onCommit({ docType: presetType, fileName, rows: validRows, resolutions, agentName: importAgent, categoryOverride: importCategory });
         setResult({ ...res, totalRows: rawRows.length, errorCount: errorRows.length });
         setStep("done");
       } catch (err) {
@@ -1898,13 +2060,19 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
       <div className="flex items-center gap-2">
         <ImportTypeTab active={presetType === "Quotation"} label="Quotation Import" onClick={() => { setPresetType("Quotation"); reset(); }} />
       </div>
-      <div className="rounded-xl border bg-white p-4 flex items-center gap-3" style={{ borderColor: LINE }}>
+      <div className="rounded-xl border bg-white p-4 flex flex-wrap items-center gap-3" style={{ borderColor: LINE }}>
+        <label className="text-xs font-medium" style={{ color: INK }}>Category</label>
+        <select value={importCategory} onChange={(e) => setImportCategory(e.target.value)} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}>
+          <option value="Account">Account</option>
+          <option value="Payroll">Payroll</option>
+        </select>
+        <span className="text-[11px]" style={{ color: "#9A9AA0" }}>Auto-detected from the PDF when available; adjust if needed.</span>
+        <div className="h-4 w-px" style={{ background: LINE }} />
         <label className="text-xs font-medium" style={{ color: INK }}>Assign imported quotation to agent</label>
         <select value={importAgent} onChange={(e) => setImportAgent(e.target.value)} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}>
           <option value="">---</option>
           {agents.filter((agent) => agent.active).map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}
         </select>
-        <span className="text-[11px]" style={{ color: "#9A9AA0" }}>Choose an agent before importing.</span>
       </div>
 
       <StepBar step={step} />
@@ -2238,7 +2406,7 @@ function ChartCard({ title, children, action }) {
 }
 
 /* ------------------------------ Settings page ------------------------------ */
-function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, setAgents, phones, setPhones, onResetData, onSaved }) {
+function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, setAgents, defaultAgentName, setDefaultAgentName, phones, setPhones, onResetData, onSaved }) {
   const [nameDraft, setNameDraft] = useState(appName);
   const [saved, setSaved] = useState(false);
   const update = (docKey, stageId, field, value) => setSchedules((prev) => ({ ...prev, [docKey]: prev[docKey].map((s) => (s.id === stageId ? { ...s, [field]: field === "workingDaysAfterPrevious" ? Number(value) : value } : s)) }));
@@ -2255,6 +2423,7 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
   };
   const removeAgent = (agent) => {
     setAgents((prev) => prev.filter((item) => item.id !== agent.id));
+    if (defaultAgentName === agent.name) setDefaultAgentName("");
     agentStore.remove(agent.id).catch((error) => console.error("[Firestore] Agent delete failed", error));
   };
   const addPhone = () => {
@@ -2313,6 +2482,17 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
           <p className="text-[11px] mt-1" style={{ color: "#9A9AA0" }}>Shown in the sidebar, header, and browser tab title.</p>
         </div>
         <button onClick={saveName} className="text-xs font-medium px-3.5 py-2 rounded-lg" style={{ background: saved ? GREEN : INK, color: "white" }}>{saved ? "Saved" : "Save Name"}</button>
+      </div>
+
+      <div className="rounded-xl border bg-white p-5 flex items-end gap-3" style={{ borderColor: LINE }}>
+        <div className="flex-1">
+          <label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Default Agent</label>
+          <select value={defaultAgentName} onChange={(e) => setDefaultAgentName(e.target.value)} className="w-full text-sm rounded-lg border px-3 py-2 outline-none bg-white" style={{ borderColor: LINE }}>
+            <option value="">No default selected</option>
+            {agents.filter((agent) => agent.active || agent.name === defaultAgentName).map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}
+          </select>
+          <p className="text-[11px] mt-1" style={{ color: "#9A9AA0" }}>Used automatically whenever a record is imported without an assigned agent.</p>
+        </div>
       </div>
 
       <div>
