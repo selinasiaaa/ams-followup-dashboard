@@ -47,8 +47,10 @@ const quotationFields = (record) => ({
   totalAmount: Number(record.amount ?? record.totalAmount ?? 0),
   followupStage: record.completedStages ?? record.followupStage ?? 0,
   nextFollowup: record.rescheduleDate || record.nextFollowup || null,
+  lastFollowupDate: record.lastFollowupDate || record.lastFollowupDate || null,
   agent: record.assignedAgent || record.agent || record.staff || "",
-  status: record.manualStatus || record.status || record.docStatus || "Open",
+  status: record.manualStatus || record.status || record.docStatus || null,
+  category: record.category || record.cat || "",
 });
 
 const agentFields = (record) => ({ name: record.name || "", active: Boolean(record.active) });

@@ -50,7 +50,8 @@ const STATUS_STYLE = {
   "Due Today": { fg: AMBER, bg: AMBER_SOFT, icon: Clock },
   "Overdue": { fg: RED, bg: RED_SOFT, icon: AlertTriangle },
   "Upcoming": { fg: BLUE, bg: BLUE_SOFT, icon: CalendarDays },
-  "Completed": { fg: GREEN, bg: GREEN_SOFT, icon: CheckCircle2 },
+  "Completed Today": { fg: GREEN, bg: GREEN_SOFT, icon: CheckCircle2 },
+  "Follow Up Later": { fg: VIOLET, bg: VIOLET_SOFT, icon: History },
   "Won": { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
   "Lost": { fg: GRAY, bg: GRAY_SOFT, icon: TrendingDown },
   "No Response": { fg: VIOLET, bg: VIOLET_SOFT, icon: CircleSlash },
@@ -98,6 +99,15 @@ function computeScheduleDates(docDateStr, stages, holidays, state) {
 }
 const money = (n) => `RM ${Number(n || 0).toLocaleString("en-MY")}`;
 const uid = (p) => `${p}${Date.now()}${Math.floor(Math.random() * 10000)}`;
+
+function trimHistoryEvents(events, months = 3) {
+  if (!Array.isArray(events)) return [];
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - months);
+  return events.filter((e) => {
+    try { const d = new Date(e.date); return !isNaN(d) && d >= cutoff; } catch (err) { return false; }
+  });
+}
 
 /* ------------------------------ Holidays & schedules ------------------------------ */
 // Malaysia public holidays for 2026 — national holidays (state: "All") plus the main
@@ -205,11 +215,12 @@ const renderTemplate = (message, vars) => message.replace(/\{\{(\w+)\}\}/g, (m, 
 /* ------------------------------ Import field maps ------------------------------ */
 const QUOTATION_FIELDS = [
   { key: "date", label: "Document Date", required: true, guesses: ["date", "quotation date", "doc date", "document date"] },
+  { key: "category", label: "Quotation Category", required: true, guesses: ["category", "account", "payroll", "account type"] },
   { key: "company", label: "Company Name", required: true, guesses: ["customer", "company", "customer name", "company name"] },
-  { key: "contactName", label: "Person in Charge", required: false, guesses: ["person in charge", "contact person", "contact", "attn", "attention"] },
-  { key: "phone", label: "Phone Number", required: false, guesses: ["phone", "contact number", "tel", "mobile", "phone number"] },
+  { key: "contactName", label: "Person in Charge", required: true, guesses: ["person in charge", "contact person", "contact", "attn", "attention"] },
+  { key: "phone", label: "Phone Number", required: true, guesses: ["phone", "contact number", "tel", "mobile", "phone number"] },
   { key: "docNo", label: "Document Number", required: true, guesses: ["quotation no", "quotation no.", "qt no", "doc no", "document no", "document number"] },
-  { key: "amount", label: "Quotation Total", required: true, guesses: ["quotation total", "total amount", "amount", "total", "value", "grand total"] },
+  { key: "amount", label: "Quotation Total(RM)", required: true, guesses: ["quotation total", "total amount", "amount", "total", "value", "grand total"] },
 ];
 function guessMapping(headers, fields) {
   const map = {};
@@ -262,8 +273,17 @@ async function extractQuotationRows(file) {
   const datePattern = /[0-9]{1,2}[.\/-][0-9]{1,2}[.\/-][0-9]{2,4}/;
   const dateLabelIndex = lines.findIndex((line) => /^Date\s*:?[\s]*$/i.test(line));
   const dateOnLabelLine = lines.find((line) => /^Date\s*[:#-]?\s*/i.test(line) && datePattern.test(line))?.match(datePattern)?.[0] || "";
-  const dateRaw = dateOnLabelLine
+  let dateRaw = dateOnLabelLine
     || (dateLabelIndex >= 0 ? lines.slice(dateLabelIndex + 1, dateLabelIndex + 4).find((line) => datePattern.test(line))?.match(datePattern)?.[0] || "" : "");
+  // Fallback: prefer dd.mm.yy (two-digit year with dots) found anywhere in the text
+  if (!dateRaw) {
+    const dotTwoYear = text.match(/\b(\d{1,2})\.(\d{1,2})\.(\d{2})\b/);
+    if (dotTwoYear) dateRaw = dotTwoYear[0];
+    else {
+      const anyDate = text.match(/[0-9]{1,2}[.\/\-][0-9]{1,2}[.\/\-][0-9]{2,4}/);
+      if (anyDate) dateRaw = anyDate[0];
+    }
+  }
   const companyPattern = /(?:SDN\.?\s+BHD\.?|ENTERPRISE|SDN\.?\s+BHd|TRADING|HOLDINGS|CORPORATION|CORP\.?|LIMITED|LTD\.?|PLT)\b/i;
   const amsIndex = lines.findIndex((line) => /AMS\s+SOFTWARE\s+SDN\.?\s+BHD\.?/i.test(line));
   const companyCandidates = lines
@@ -286,8 +306,32 @@ async function extractQuotationRows(file) {
     "Document Number": docNo,
     "Quotation Total": amount,
   };
-  if (Object.values(row).every((value) => !String(value || "").trim())) throw new Error("No readable quotation fields found");
-  return { rows: [row], companyCandidates: [...new Set(companyCandidates)] };
+  // Heuristic category detection from PDF text
+  let detectedCategory = "";
+  let categoryConfidence = 0;
+  const lc = text.toLowerCase();
+  const payrollKeywords = ["payroll", "salary", "payslip", "epf", "socso", "kwsp", "kwsp", "payroll services", "payroll processing"];
+  const accountKeywords = ["account", "accounting", "invoice", "gst", "tax", "billing", "accounts receivable", "accounts payable"];
+  const payrollMatches = payrollKeywords.filter((k) => lc.includes(k)).length;
+  const accountMatches = accountKeywords.filter((k) => lc.includes(k)).length;
+  if (payrollMatches > 0 || accountMatches > 0) {
+    if (payrollMatches > accountMatches) { detectedCategory = "Payroll"; categoryConfidence = Math.min(0.9, 0.4 + payrollMatches * 0.2); }
+    else if (accountMatches > payrollMatches) { detectedCategory = "Account"; categoryConfidence = Math.min(0.9, 0.4 + accountMatches * 0.2); }
+  }
+
+  // expose category candidate in row and confidences
+  row["Quotation Category"] = detectedCategory;
+  // Simple confidence heuristics (0..1)
+  const confidences = {};
+  confidences["Quotation Category"] = categoryConfidence;
+  confidences["Document Date"] = dateRaw && datePattern.test(dateRaw) ? 0.95 : (dateRaw ? 0.6 : 0.2);
+  confidences["Company Name"] = company ? (companyPattern.test(company) ? 0.9 : 0.6) : 0.2;
+  confidences["Person in Charge"] = contactName ? (/\bDear\b/i.test(lineText) ? 0.95 : 0.6) : 0.2;
+  confidences["Phone"] = phone ? 0.95 : 0.2;
+  confidences["Document Number"] = docNo ? 0.9 : 0.2;
+  confidences["Quotation Total"] = amount ? 0.9 : 0.2;
+
+  return { rows: [row], confidences: [confidences], companyCandidates: [...new Set(companyCandidates)] };
 }
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return NaN;
@@ -423,6 +467,7 @@ function LoadingScreen({ label }) {
 
 function Console({ appName, setAppName, onSignOut }) {
   const [page, setPage] = useState("dashboard");
+  const [followupPreset, setFollowupPreset] = useState(null);
   const [holidays, setHolidays] = useState(DEFAULT_HOLIDAYS);
   const [operatingState, setOperatingState] = useState(DEFAULT_OPERATING_STATE);
   const [schedules, setSchedules] = useState(DEFAULT_SCHEDULES);
@@ -480,8 +525,14 @@ function Console({ appName, setAppName, onSignOut }) {
             contactName: record.contactName || record.personInCharge || "",
             phone: record.phone || "",
             amount: record.amount ?? record.totalAmount ?? 0,
+            category: record.category || "",
             completedStages: record.completedStages ?? record.followupStage ?? 0,
             assignedAgent: record.assignedAgent || record.agent || "",
+            // Preserve persisted manual status (stored as `status` or `manualStatus` in Firestore)
+            manualStatus: record.manualStatus || record.status || record.docStatus || null,
+            // Preserve reschedule/next follow-up date
+            rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
+            history: trimHistoryEvents(record.history, 3),
           })));
           if (storedAgents.length) {
             const userAgents = storedAgents.filter((record) => !((record.id || "").match(/^agent-[1-4]$/) && LEGACY_SAMPLE_AGENTS.has(record.name)));
@@ -551,14 +602,23 @@ function Console({ appName, setAppName, onSignOut }) {
     const nextDate = doc.rescheduleDate && idx < totalStages ? parseYMD(doc.rescheduleDate) : scheduledNext;
     const currentStage = idx < totalStages ? stages[idx] : null;
     const daysSince = diffCalendarDays(TODAY, parseYMD(doc.date));
+    const lastFollowupDate = doc.lastFollowupDate || (idx > 0 ? ymd(dates[idx - 1]) : null);
     let status;
-    if (doc.manualStatus) status = doc.manualStatus;
-    else if (!nextDate) status = "Completed";
-    else {
-      const diff = diffCalendarDays(nextDate, TODAY);
-      status = diff === 0 ? "Due Today" : diff < 0 ? "Overdue" : "Upcoming";
+    // Terminal manual statuses (Won/Lost) and paused status (Follow Up Later) override date-based status
+    if (doc.manualStatus === "Won" || doc.manualStatus === "Lost" || doc.manualStatus === "Follow Up Later") {
+      status = doc.manualStatus;
+    } else {
+      // Completed Today has priority if last follow-up was today
+      if (lastFollowupDate === ymd(TODAY)) {
+        status = "Completed Today";
+      } else if (!nextDate) {
+        // No upcoming follow-up date — treat as Upcoming by default (not Open)
+        status = "Upcoming";
+      } else {
+        const diff = diffCalendarDays(nextDate, TODAY);
+        status = diff === 0 ? "Due Today" : diff < 0 ? "Overdue" : "Upcoming";
+      }
     }
-    const lastFollowupDate = idx > 0 ? ymd(dates[idx - 1]) : null;
     return {
       ...doc, docType, stages, dates, totalStages, idx, nextDate, currentStage, daysSince, status, lastFollowupDate,
       customer: { name: doc.contactName || doc.company, company: doc.company, phone: doc.phone, email: doc.email },
@@ -577,42 +637,120 @@ function Console({ appName, setAppName, onSignOut }) {
     overdue: allDocs.filter((d) => d.status === "Overdue").length,
     upcoming: allDocs.filter((d) => d.status === "Upcoming").length,
     completedToday: allDocs.filter((d) => d.lastFollowupDate === ymd(TODAY)).length,
+    followUpLater: allDocs.filter((d) => d.manualStatus === "Follow Up Later").length,
   };
 
-  function applyAction(doc, docType, action, extra) {
-    const setFn = setQuotations;
+  async function applyAction(doc, docType, action, extra) {
     const stages = schedules.quotation;
     const stageInfo = stages[doc.completedStages];
     const template = templates.find((t) => t.docType === docType && t.category === doc.category && t.stageCode === stageInfo?.code);
     const rescheduleDate = extra && extra.rescheduleDate;
-    setFn((prev) => prev.map((d) => {
-      if (d.id !== doc.id) return d;
+
+    // Special-case: edit an existing history entry's note (used to edit customer remarks)
+    if (action === "EditHistory") {
+      const idx = extra?.index;
+      const newNote = extra?.newNote;
+      if (typeof idx === "number") {
+        const updated = {
+          ...doc,
+          history: (doc.history || []).map((h, i) => (i === idx ? { ...h, note: newNote } : h)),
+        };
+        setQuotations((prev) => prev.map((d) => (d.id === doc.id ? updated : d)));
+        try { await quotationStore.update(updated.id, updated); } catch (error) { console.error("[Firestore] Follow-up update failed", error); }
+        setActiveFollowup(updated);
+        showToast(`Remark updated.`);
+      }
+      return;
+    }
+
+    const makeUpdatedFor = (d, act, params) => {
+      // Handle status-only action
+      if (act === "SetStatus") {
+        const updatedStatus = params?.status || d.manualStatus;
+        const evt = { date: ymd(TODAY), stage: stageInfo ? stageInfo.label : "Follow-up", label: `Status set`, note: `Status changed to ${updatedStatus}` };
+        return { ...d, manualStatus: updatedStatus, history: trimHistoryEvents([...(d.history || []), evt], 3) };
+      }
+
+      let note = params?.message || act;
+      if (act === "Completed") note = "Marked as completed by " + d.staff;
+      if (act === "Customer Responded") note = params?.customerRemark || params?.message || "Customer responded.";
+      if (act === "Rescheduled") note = `Follow-up rescheduled to ${fmtDate(params?.rescheduleDate)}.`;
+      if (act === "Won") note = "Deal marked as Won.";
+      if (act === "Lost") note = "Deal marked as Lost.";
+      if (act === "No Response") note = "No response from customer.";
+      if (act === "Follow Up Later") note = params?.customerRemark || "Follow up later requested by customer.";
+
       const newHistoryEvent = {
-        date: ymd(TODAY), stage: stageInfo ? stageInfo.label : "Follow-up", label: `${stageInfo ? stageInfo.label : "Follow-up"} (${stageInfo ? stageInfo.tag : ""})`.trim(),
-        note: action === "Completed" ? "Marked as completed by " + d.staff
-          : action === "Customer Responded" ? "Customer responded."
-          : action === "Rescheduled" ? `Follow-up rescheduled to ${fmtDate(rescheduleDate)}.`
-          : action === "Won" ? "Deal marked as Won."
-          : action === "Lost" ? "Deal marked as Lost."
-          : action === "No Response" ? "No response from customer." : action,
-        template: template ? template.title : null,
+        date: ymd(TODAY), stage: stageInfo ? stageInfo.label : "Follow-up",
+        label: `${stageInfo ? stageInfo.label : "Follow-up"} (${stageInfo ? stageInfo.tag : ""})`.trim(),
+        note,
+        customerResponse: act === "Customer Responded" || act === "Follow Up Later",
+        template: params?.templateTitle || (template ? template.title : null),
       };
-      const isTerminal = ["Won", "Lost", "No Response"].includes(action);
+
+      const isTerminal = ["Won", "Lost"].includes(act);
       const updated = {
         ...d,
-        assignedAgent: extra?.agentName || d.assignedAgent || d.staff || "",
-        sendingPhoneId: extra?.phoneId || d.sendingPhoneId || null,
-        completedStages: action === "Rescheduled" ? d.completedStages : Math.min(d.completedStages + 1, stages.length),
-        manualStatus: isTerminal ? action : d.manualStatus,
-        rescheduleDate: action === "Rescheduled" ? rescheduleDate : null,
-        history: [...d.history, newHistoryEvent],
+        assignedAgent: params?.agentName || d.assignedAgent || d.staff || "",
+        sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
+        completedStages: act === "Rescheduled" ? d.completedStages : Math.min((d.completedStages || 0) + (act === "Completed" ? 1 : 0), stages.length),
+        manualStatus: isTerminal ? act : (act === "Follow Up Later" ? "Follow Up Later" : d.manualStatus),
+        rescheduleDate: act === "Rescheduled" ? params?.rescheduleDate : d.rescheduleDate,
+        history: trimHistoryEvents([...(d.history || []), newHistoryEvent], 3),
       };
-      quotationStore.update(updated.id, updated).catch((error) => console.error("[Firestore] Follow-up update failed", error));
+
+      if (act === "Completed") updated.lastFollowupDate = ymd(TODAY);
       return updated;
-    }));
-    setActiveFollowup(null);
-    showToast(`${action} recorded for ${doc.customer?.company || doc.company}.`);
+    };
+
+    // If the follow-up hasn't been marked completed today, auto-insert Completed step before outcome
+    const needsCompleted = (action !== "Completed" && action !== "EditHistory" && (doc.lastFollowupDate !== ymd(TODAY)));
+    const sequence = [];
+    if (needsCompleted) sequence.push({ act: "Completed", params: {} });
+    sequence.push({ act: action, params: extra || {} });
+    // If caller provided a follow-up outcome to apply after recording a customer response, include it
+    if (action === "Customer Responded" && extra?.nextAction) {
+      sequence.push({ act: extra.nextAction, params: extra.nextParams || {} });
+    }
+
+    try {
+      let current = doc;
+      for (const step of sequence) {
+        const updated = makeUpdatedFor(current, step.act, step.params);
+        setQuotations((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+        await quotationStore.update(updated.id, updated);
+        current = updated;
+      }
+
+      // Refresh quotations from Firestore to ensure latest server-side state
+      const refreshed = await quotationStore.list();
+      const mapped = refreshed.map((record) => ({
+        ...record,
+        date: record.date || record.docDate || "",
+        company: record.company || record.companyName || "",
+        contactName: record.contactName || record.personInCharge || "",
+        phone: record.phone || "",
+        amount: record.amount ?? record.totalAmount ?? 0,
+        completedStages: record.completedStages ?? record.followupStage ?? 0,
+        assignedAgent: record.assignedAgent || record.agent || "",
+        manualStatus: record.manualStatus || record.status || record.docStatus || null,
+        rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
+        history: trimHistoryEvents(record.history, 3),
+      }));
+      setQuotations(mapped);
+
+      // Close follow-up panel, go back to Follow-ups page
+      setActiveFollowup(null);
+      setPage("followups");
+      showToast(`${action} recorded for ${doc.customer?.company || doc.company}.`);
+    } catch (err) {
+      console.error("[Firestore] Follow-up update failed", err);
+      showToast("Could not save follow-up. Please try again.");
+    }
+    return;
   }
+
+  
 
   function deleteDoc(doc) {
     const setFn = setQuotations;
@@ -661,7 +799,7 @@ function Console({ appName, setAppName, onSignOut }) {
   }
 
   // ---- PDF quotation and customer import merge logic ----
-  function commitImport({ docType, fileName, rows, resolutions, agentName }) {
+  function commitImport({ docType, fileName, rows, resolutions, agentName, phoneId }) {
     const batchId = uid("BATCH-");
     const importDate = new Date().toISOString();
     let newCount = 0, updatedCount = 0, skippedCount = 0;
@@ -706,7 +844,8 @@ function Console({ appName, setAppName, onSignOut }) {
               ...next[existingIdx],
               company: row.company, contactName: row.contactName, phone: row.phone, email: row.email,
               category: row.category || next[existingIdx].category, amount: row.amount, date: row.date,
-              staff: row.staff || next[existingIdx].staff, assignedAgent: agentName || row.agentName || next[existingIdx].assignedAgent || next[existingIdx].staff, sendingPhoneId: row.phoneId || next[existingIdx].sendingPhoneId || null, docStatus: row.docStatus || next[existingIdx].docStatus,
+              staff: row.staff || next[existingIdx].staff, assignedAgent: agentName || row.agentName || next[existingIdx].assignedAgent || next[existingIdx].staff, docStatus: row.docStatus || next[existingIdx].docStatus,
+              sendingPhoneId: row.phoneId || phoneId || next[existingIdx].sendingPhoneId || null,
               source: "PDF Quotation Import", importDate, importFileName: fileName, importBatchId: batchId,
               // follow-up progress (completedStages / manualStatus / notes / history / rescheduleDate) preserved untouched
             };
@@ -718,7 +857,7 @@ function Console({ appName, setAppName, onSignOut }) {
           const id = existingIdx !== -1 && resolution === "new" ? `${key}-${uid("DUP")}` : key;
           const rec = {
             id, docType, docNo: row.docNo, company: row.company, contactName: row.contactName, phone: row.phone, email: row.email,
-            category: row.category || "Account", date: row.date, amount: row.amount, staff: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", assignedAgent: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", sendingPhoneId: row.phoneId || null, docStatus: row.docStatus || "Open",
+            category: row.category || "Account", date: row.date, amount: row.amount, staff: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", assignedAgent: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", sendingPhoneId: row.phoneId || phoneId || null, docStatus: row.docStatus || null,
             source: "PDF Quotation Import", importDate, importFileName: fileName, importBatchId: batchId,
             completedStages: 0, manualStatus: null, notes: "", rescheduleDate: null,
             history: seedHistory(row.date, 0, stages, holidays, docType, operatingState),
@@ -791,7 +930,7 @@ function Console({ appName, setAppName, onSignOut }) {
       </aside>
 
       <main className="flex-1 min-w-0 overflow-y-auto">
-        <TopBar counts={counts} today={TODAY} appName={appName} />
+        <TopBar counts={counts} today={TODAY} appName={appName} onOpenFollowups={(filters) => { setFollowupPreset(filters); setPage("followups"); }} />
         <div className="px-8 py-6">
           {page === "dashboard" && (
             <Dashboard counts={counts} allQuotations={allQuotations} todaysFollowups={todaysFollowups}
@@ -800,10 +939,10 @@ function Console({ appName, setAppName, onSignOut }) {
           )}
           {page === "import" && (
             <ImportPage schedules={schedules} holidays={holidays} presetType={importPresetType} setPresetType={setImportPresetType}
-              existingQuotations={quotations} agents={agents} onCommit={commitImport} />
+              existingQuotations={quotations} agents={agents} phones={phones} onCommit={commitImport} />
           )}
           {page === "customers" && <CustomersPage allDocs={allDocs} customers={customers} onDeleteCustomer={deleteCustomer} onBulkDeleteCustomers={bulkDeleteCustomers} onOpenCustomerDocs={(company, name) => setCustomerDrill({ company, name })} />}
-          {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={setActiveFollowup} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} />}
+          {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={setActiveFollowup} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
           {page === "templates" && <TemplatesPage templates={templates} setTemplates={setTemplates} onDeleteTemplate={deleteTemplate} />}
           {page === "holidays" && <HolidaysPage holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} />}
           {page === "importhistory" && <ImportHistoryPage importHistory={importHistory} appName={appName} onOpenBatch={setBatchDrill} />}
@@ -947,7 +1086,7 @@ export default function App() {
 }
 
 /* ------------------------------ Top bar ------------------------------ */
-function TopBar({ counts, today, appName }) {
+function TopBar({ counts, today, appName, onOpenFollowups }) {
   return (
     <div className="sticky top-0 z-10 border-b px-8 py-4 flex items-center justify-between" style={{ background: "rgba(246,245,241,0.9)", backdropFilter: "blur(6px)", borderColor: LINE }}>
       <div>
@@ -955,10 +1094,11 @@ function TopBar({ counts, today, appName }) {
         <p className="text-xs" style={{ color: "#8B8C92" }}>{today.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · {appName}</p>
       </div>
       <div className="flex items-center gap-2">
-        <Badge icon={Bell} label="Due Today" value={counts.dueToday} fg={AMBER} bg={AMBER_SOFT} />
-        <Badge icon={AlertTriangle} label="Overdue" value={counts.overdue} fg={RED} bg={RED_SOFT} />
-        <Badge icon={CalendarDays} label="Upcoming" value={counts.upcoming} fg={BLUE} bg={BLUE_SOFT} />
-        <Badge icon={CheckCircle2} label="Completed Today" value={counts.completedToday} fg={GREEN} bg={GREEN_SOFT} />
+        <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Due Today" })}><Badge icon={Bell} label="Due Today" value={counts.dueToday} fg={AMBER} bg={AMBER_SOFT} /></button>
+        <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Overdue" })}><Badge icon={AlertTriangle} label="Overdue" value={counts.overdue} fg={RED} bg={RED_SOFT} /></button>
+        <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Upcoming" })}><Badge icon={CalendarDays} label="Upcoming" value={counts.upcoming} fg={BLUE} bg={BLUE_SOFT} /></button>
+        <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Follow Up Later" })}><Badge icon={History} label="Follow Up Later" value={counts.followUpLater} fg={VIOLET} bg={VIOLET_SOFT} /></button>
+        <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Completed Today", completedToday: true })}><Badge icon={CheckCircle2} label="Completed Today" value={counts.completedToday} fg={GREEN} bg={GREEN_SOFT} /></button>
       </div>
     </div>
   );
@@ -1029,6 +1169,7 @@ function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onO
         <StatCard label="Due Today" value={counts.dueToday} tint={AMBER} />
         <StatCard label="Overdue" value={counts.overdue} tint={RED} />
         <StatCard label="Upcoming" value={counts.upcoming} tint={BLUE} />
+        <StatCard label="Follow Up Later" value={counts.followUpLater} tint={VIOLET} />
         <StatCard label="Account Quotations" value={accountQ} />
         <StatCard label="Payroll Quotations" value={payrollQ} />
         <StatCard label="Won · Lost" value={`${won} · ${lost}`} tint={GREEN} />
@@ -1118,7 +1259,7 @@ const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "Ju
 /* ------------------------------ Doc list page ------------------------------ */
 const EMPTY_FILTERS = { search: "", category: "All", status: "All", agent: "All", year: "All", month: "All" };
 
-function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onOpenDetail, onDeleteDoc, onBulkDelete }) {
+function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onOpenDetail, onDeleteDoc, onBulkDelete, initialFilters, clearInitialFilters }) {
   const [draft, setDraft] = useState(EMPTY_FILTERS);
   const [applied, setApplied] = useState(EMPTY_FILTERS);
   const [selectedKeys, setSelectedKeys] = useState(new Set());
@@ -1128,6 +1269,9 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
   const filtered = docs.filter((d) => {
     if (applied.category !== "All" && d.category !== applied.category) return false;
     if (applied.status !== "All" && d.status !== applied.status) return false;
+    if (applied.completedToday) {
+      if (d.lastFollowupDate !== ymd(TODAY)) return false;
+    }
     if (applied.agent !== "All" && (d.assignedAgent || d.staff) !== applied.agent) return false;
     const dDate = parseYMD(d.date);
     if (applied.year !== "All" && String(dDate.getFullYear()) !== applied.year) return false;
@@ -1139,12 +1283,22 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
     }
     return true;
   });
-  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Completed", "Won", "Lost", "No Response"];
+  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Completed Today", "Won", "Lost", "No Response"];
   const isDirty = JSON.stringify(draft) !== JSON.stringify(applied);
   const isFilteredAtAll = Object.entries(applied).some(([k, v]) => v !== EMPTY_FILTERS[k]);
 
   const runFilter = () => { setApplied(draft); setSelectedKeys(new Set()); };
   const resetFilters = () => { setDraft(EMPTY_FILTERS); setApplied(EMPTY_FILTERS); setSelectedKeys(new Set()); };
+
+  useEffect(() => {
+    if (initialFilters) {
+      const merged = { ...EMPTY_FILTERS, ...initialFilters };
+      setDraft(merged);
+      setApplied(merged);
+      if (clearInitialFilters) clearInitialFilters();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFilters]);
   const keyOf = (d) => `${d.docType}:${d.id}`;
   const toggleOne = (d) => setSelectedKeys((prev) => { const next = new Set(prev); const k = keyOf(d); if (next.has(k)) next.delete(k); else next.add(k); return next; });
   const toggleAll = (visibleDocs) => setSelectedKeys((prev) => {
@@ -1415,15 +1569,46 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
   const stageInfo = doc.currentStage;
   const template = templates.find((t) => t.docType === doc.docType && t.category === doc.category && t.stageCode === stageInfo?.code) || templates.find((t) => t.docType === doc.docType && t.stageCode === stageInfo?.code);
   const vars = { CustomerName: (doc.customer?.name || "").split(" ")[0], CompanyName: doc.customer?.company, QuotationNo: doc.docNo, QuotationDate: fmtDate(doc.date), Amount: money(doc.amount), StaffName: (doc.staff || "").split(" ")[0] };
+  const [selectedTemplateId, setSelectedTemplateId] = useState(template?.id || "");
   const [message, setMessage] = useState(template ? renderTemplate(template.message, vars) : "");
   const [agentName, setAgentName] = useState(doc.assignedAgent || doc.staff || agents.find((agent) => agent.active)?.name || "");
   const [phoneId, setPhoneId] = useState(doc.sendingPhoneId || "");
   const [copied, setCopied] = useState(false);
   const [reschedulingOpen, setReschedulingOpen] = useState(false);
   const [rescheduleDate, setRescheduleDate] = useState(doc.nextDate ? ymd(doc.nextDate) : "");
+  const [customerResponseOpen, setCustomerResponseOpen] = useState(false);
+  const [customerRemark, setCustomerRemark] = useState("");
+  const [remarkPendingReschedule, setRemarkPendingReschedule] = useState(false);
+  const [editingHistoryOpen, setEditingHistoryOpen] = useState(false);
+  const [editingHistoryIndex, setEditingHistoryIndex] = useState(null);
+  const [editingHistoryNote, setEditingHistoryNote] = useState("");
   const copy = () => { navigator.clipboard?.writeText(message); setCopied(true); setTimeout(() => setCopied(false), 1500); };
-  const confirmReschedule = () => { if (rescheduleDate) onAction("Rescheduled", { rescheduleDate, agentName, phoneId }); };
-  const submitAction = (action) => onAction(action, { agentName, phoneId });
+  const submitAction = (action) => onAction(action, { agentName, phoneId, message, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title });
+  const confirmReschedule = () => {
+    if (!rescheduleDate) return;
+    if (remarkPendingReschedule) {
+      // If remark was entered and user chose reschedule from remark modal, apply Customer Responded then Rescheduled in one sequence
+      onAction("Customer Responded", { agentName, phoneId, customerRemark, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title, nextAction: "Rescheduled", nextParams: { rescheduleDate, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title } });
+      setRemarkPendingReschedule(false);
+      setCustomerRemark("");
+      setReschedulingOpen(false);
+      return;
+    }
+    onAction("Rescheduled", { rescheduleDate, agentName, phoneId, message, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title });
+    setReschedulingOpen(false);
+  };
+
+  const confirmCustomerResponse = (nextAction, nextParams) => {
+    const payload = { agentName, phoneId, customerRemark, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title };
+    if (nextAction) {
+      payload.nextAction = nextAction;
+      payload.nextParams = nextParams || {};
+    }
+    onAction("Customer Responded", payload);
+    setCustomerResponseOpen(false);
+    setCustomerRemark("");
+  };
+  const setStatus = (s) => onAction("SetStatus", { status: s, agentName, phoneId, message, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title });
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-end" style={{ background: "rgba(18,23,43,0.45)" }}>
       <div className="h-full w-full max-w-md bg-white flex flex-col shadow-2xl">
@@ -1436,18 +1621,29 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[#F2F1EC]"><X size={16} /></button>
         </div>
         <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto flex-1">
-          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="grid grid-cols-2 gap-3 text-xs">
             <Field label="Document No." value={doc.docNo} />
             <Field label="Follow-up Stage" value={stageInfo ? `${stageInfo.label} (${stageInfo.tag})` : "Completed"} />
             <Field label="Document Date" value={fmtDate(doc.date)} />
             <Field label="Amount" value={money(doc.amount)} />
             <div><div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Agent</div><select value={agentName} onChange={(e) => setAgentName(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="">Select agent</option>{agents.filter((agent) => agent.active || agent.name === agentName).map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}</select></div>
             <div><div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Sending phone</div><select value={phoneId} onChange={(e) => setPhoneId(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="">Select phone</option>{phones.filter((phone) => phone.active || phone.id === phoneId).map((phone) => <option key={phone.id} value={phone.id}>{phone.name} · {phone.number}</option>)}</select></div>
-            <Field label="Status" custom={<StatusPill status={doc.status} />} />
+            <div>
+              <div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Status</div>
+              <select value={doc.manualStatus || doc.status} onChange={(e) => setStatus(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}>
+                {Object.keys(STATUS_STYLE).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
           </div>
           <div className="rounded-lg border p-3" style={{ borderColor: LINE, background: "#FBFAF7" }}>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold" style={{ color: INK }}>Recommended message</span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-semibold" style={{ color: INK }}>Recommended message</span>
+                <select value={selectedTemplateId} onChange={(e) => { const id = e.target.value; setSelectedTemplateId(id); const tpl = templates.find((t)=>t.id===id); setMessage(tpl ? renderTemplate(tpl.message, vars) : ""); }} className="text-xs rounded-md border px-2 py-1 bg-white" style={{ borderColor: LINE }}>
+                  <option value="">(none)</option>
+                  {templates.filter((t) => t.docType === doc.docType && (t.stageCode === stageInfo?.code || t.category === doc.category)).map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+                </select>
+              </div>
               {template && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: TEAL_SOFT, color: TEAL }}>{template.type} · {template.language}</span>}
             </div>
             <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={6} className="w-full text-sm rounded-md border p-2.5 outline-none resize-none" style={{ borderColor: LINE, color: "#3A3B41" }} />
@@ -1472,15 +1668,56 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
             Source data (customer, amount, date) comes from SQL Accounting. This action only updates follow-up progress, never the imported document.
           </div>
           {doc.notes && <div className="text-xs rounded-lg border p-3" style={{ borderColor: LINE }}><span className="font-semibold block mb-1" style={{ color: INK }}>Notes</span><span style={{ color: "#5C5D63" }}>{doc.notes}</span></div>}
+          <div>
+            <div className="text-xs font-semibold mb-2" style={{ color: "#9A9AA0" }}>Follow-up Timeline</div>
+            <div className="rounded-lg border p-3" style={{ borderColor: LINE }}>
+              <Timeline events={doc.history || []} onEditEvent={(i) => { setEditingHistoryIndex(i); setEditingHistoryNote((doc.history && doc.history[i] && doc.history[i].note) || ""); setEditingHistoryOpen(true); }} />
+            </div>
+          </div>
         </div>
-        <div className="px-5 py-4 border-t grid grid-cols-2 gap-2" style={{ borderColor: LINE }}>
+          <div className="px-5 py-4 border-t grid grid-cols-2 gap-2" style={{ borderColor: LINE }}>
           <ActionBtn label="Mark as Completed" onClick={() => submitAction("Completed")} primary />
-          <ActionBtn label="Customer Responded" onClick={() => submitAction("Customer Responded")} />
+          <ActionBtn label="Customer Response" onClick={() => setCustomerResponseOpen(true)} />
           <ActionBtn label="Reschedule" onClick={() => setReschedulingOpen((v) => !v)} />
           <ActionBtn label="No Response" onClick={() => submitAction("No Response")} />
           <ActionBtn label="Won" onClick={() => submitAction("Won")} tint={GREEN} />
           <ActionBtn label="Lost" onClick={() => submitAction("Lost")} tint={GRAY} />
         </div>
+        {customerResponseOpen && (
+          <div className="fixed inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(18,23,43,0.45)" }}>
+            <div className="bg-white rounded-lg p-4 w-full max-w-md">
+              <div className="flex items-center justify-between mb-2"><div className="text-sm font-semibold">Customer has responded</div><button onClick={() => setCustomerResponseOpen(false)}><X size={16} /></button></div>
+              <div className="text-xs mb-2" style={{ color: "#6B6C72" }}>Please record the customer's response below.</div>
+              <label className="text-xs font-medium mb-1" style={{ color: "#6B6C72" }}>Remark:</label>
+              <textarea value={customerRemark} onChange={(e) => setCustomerRemark(e.target.value)} rows={4} className="w-full rounded-md border p-2 mb-3" style={{ borderColor: LINE }} />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setCustomerResponseOpen(false)} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
+                <button onClick={() => confirmCustomerResponse()} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Save Remark Only</button>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => confirmCustomerResponse("No Response")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: "white", color: "#3A3B41", borderColor: LINE }}>No Response</button>
+                  <button onClick={() => confirmCustomerResponse("Follow Up Later")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: AMBER_SOFT, color: AMBER, borderColor: LINE }}>Follow Up Later</button>
+                  <button onClick={() => { setRemarkPendingReschedule(true); setCustomerResponseOpen(false); setReschedulingOpen(true); }} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: BLUE_SOFT, color: BLUE, borderColor: LINE }}>Reschedule</button>
+                  <button onClick={() => confirmCustomerResponse("Won")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GREEN_SOFT, color: GREEN, borderColor: LINE }}>Won</button>
+                  <button onClick={() => confirmCustomerResponse("Lost")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GRAY, color: "white", borderColor: LINE }}>Lost</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {editingHistoryOpen && (
+          <div className="fixed inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(18,23,43,0.45)" }}>
+            <div className="bg-white rounded-lg p-4 w-full max-w-md">
+              <div className="flex items-center justify-between mb-2"><div className="text-sm font-semibold">Edit Customer Remark</div><button onClick={() => setEditingHistoryOpen(false)}><X size={16} /></button></div>
+              <div className="text-xs mb-2" style={{ color: "#6B6C72" }}>Edit the recorded customer response below.</div>
+              <label className="text-xs font-medium mb-1" style={{ color: "#6B6C72" }}>Remark:</label>
+              <textarea value={editingHistoryNote} onChange={(e) => setEditingHistoryNote(e.target.value)} rows={4} className="w-full rounded-md border p-2 mb-3" style={{ borderColor: LINE }} />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setEditingHistoryOpen(false)} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
+                <button onClick={() => { onAction("EditHistory", { index: editingHistoryIndex, newNote: editingHistoryNote }); setEditingHistoryOpen(false); }} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: INK, color: "white" }}>Save</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1555,7 +1792,7 @@ function DetailDrawer({ doc, onClose, onOpenFollowup, onUpdateCategory }) {
   );
 }
 function SectionTitle({ children, noMargin }) { return <h4 className={`text-xs font-semibold uppercase tracking-wide ${noMargin ? "" : "mb-2"}`} style={{ color: "#9A9AA0" }}>{children}</h4>; }
-function Timeline({ events }) {
+function Timeline({ events, onEditEvent }) {
   return (
     <div className="flex flex-col">
       {events.map((e, i) => (
@@ -1565,7 +1802,12 @@ function Timeline({ events }) {
             {i < events.length - 1 && <div className="w-px flex-1" style={{ background: LINE }} />}
           </div>
           <div className="pb-4">
-            <div className="text-xs font-semibold" style={{ color: INK }}>{e.label} <span className="font-normal" style={{ color: "#9A9AA0" }}>· {fmtDate(e.date)}</span></div>
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold" style={{ color: INK }}>{e.label} <span className="font-normal" style={{ color: "#9A9AA0" }}>· {fmtDate(e.date)}</span></div>
+              {onEditEvent && e.customerResponse && (
+                <button onClick={() => onEditEvent(i)} className="text-[11px] underline" style={{ color: TEAL }}>Edit</button>
+              )}
+            </div>
             <div className="text-xs" style={{ color: "#7C7D82" }}>{e.note}</div>
             {e.template && <div className="text-[11px] mt-0.5" style={{ color: TEAL }}>Template: {e.template}</div>}
           </div>
@@ -1756,10 +1998,11 @@ function HolidaysPage({ holidays, setHolidays, operatingState, setOperatingState
 }
 
 /* ------------------------------ Import Data page ------------------------------ */
-function ImportPage({ schedules, holidays, presetType, setPresetType, existingQuotations, agents, onCommit }) {
+function ImportPage({ schedules, holidays, presetType, setPresetType, existingQuotations, agents, phones, onCommit }) {
   const [step, setStep] = useState("upload"); // upload | importing | preview | duplicates | confirm | failed | done
   const [fileName, setFileName] = useState("");
   const [rawRows, setRawRows] = useState([]); // array of objects keyed by original header
+  const [rawConfidences, setRawConfidences] = useState([]);
   const [headers, setHeaders] = useState([]);
   const [mapping, setMapping] = useState({});
   const [validRows, setValidRows] = useState([]);
@@ -1771,6 +2014,9 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
   const [importingLabel, setImportingLabel] = useState("Reading file...");
   const [dragActive, setDragActive] = useState(false);
   const [importAgent, setImportAgent] = useState("");
+  const [importPhone, setImportPhone] = useState("");
+  const [lowConfidenceRows, setLowConfidenceRows] = useState([]);
+  const [confirmLowConfidence, setConfirmLowConfidence] = useState(false);
   const fileInputRef = useRef(null);
 
   const isCustomer = false;
@@ -1779,7 +2025,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
   const keyLabel = "Document";
   const targetLabel = "Quotations";
 
-  const reset = () => { setStep("upload"); setFileName(""); setRawRows([]); setHeaders([]); setMapping({}); setValidRows([]); setErrorRows([]); setDuplicates([]); setResolutions({}); setResult(null); setFileError(""); if (fileInputRef.current) fileInputRef.current.value = ""; };
+  const reset = () => { setStep("upload"); setFileName(""); setRawRows([]); setRawConfidences([]); setHeaders([]); setMapping({}); setValidRows([]); setErrorRows([]); setDuplicates([]); setResolutions({}); setResult(null); setFileError(""); setLowConfidenceRows([]); setConfirmLowConfidence(false); if (fileInputRef.current) fileInputRef.current.value = ""; };
 
   function handleFile(file) {
     const ext = file.name.split(".").pop().toLowerCase();
@@ -1801,6 +2047,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
         }));
         const hdrs = Object.keys(rows[0]);
         setRawRows(rows);
+        setRawConfidences(extracted.confidences || []);
         setHeaders(hdrs);
         setMapping(guessMapping(hdrs, fields));
         setStep("preview");
@@ -1812,6 +2059,10 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
   }
 
   function runValidation() {
+    // Require agent and sending phone before validating and moving forward
+    if (!importAgent) { setFileError("Please select an agent before validating."); setStep("preview"); return; }
+    if (!importPhone) { setFileError("Please select a sending phone before validating."); setStep("preview"); return; }
+    setFileError("");
     setImportingLabel("Validating rows against required fields...");
     setStep("importing");
     setTimeout(() => {
@@ -1822,6 +2073,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
         const company = String(get("company") || "").trim();
         const categoryRaw = String(get("category") || "").trim();
         const category = ["Account", "Payroll"].includes(categoryRaw) ? categoryRaw : "";
+        
 
         if (isCustomer) {
           const issues = [];
@@ -1844,6 +2096,10 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
         if (!docNo) issues.push("Missing document number");
         if (!dateYMD) issues.push("Invalid document date");
         if (!company) issues.push("Missing customer/company name");
+        const contact = String(get("contactName") || "").trim();
+        const phoneVal = String(get("phone") || "").trim();
+        if (!contact) issues.push("Missing person in charge");
+        if (!phoneVal) issues.push("Missing phone number");
         if (isNaN(amount)) issues.push("Invalid amount");
         const rec = {
           rowIndex: i + 2, keyValue: docNo, docNo, date: dateYMD, company, contactName: String(get("contactName") || "").trim(),
@@ -1851,6 +2107,13 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
           category, amount: isNaN(amount) ? 0 : amount, docStatus: String(get("docStatus") || "").trim(), staff: String(get("staff") || "").trim(),
           categoryMissing: !category,
         };
+        // attach confidences from rawConfidences (if available)
+        const conf = rawConfidences[i] || {};
+        const companyConf = mapping["company"] ? (conf[mapping["company"]] ?? 0) : 0;
+        const contactConf = mapping["contactName"] ? (conf[mapping["contactName"]] ?? 0) : 0;
+        rec.companyConfidence = companyConf;
+        rec.contactConfidence = contactConf;
+        if (!category) issues.push("Missing category");
         if (issues.length) errors.push({ ...rec, issues });
         else valid.push(rec);
       });
@@ -1864,6 +2127,10 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
 
       setValidRows(valid);
       setErrorRows(errors);
+      // identify low-confidence rows (company or contact < 0.6)
+      const low = valid.filter((r) => (r.companyConfidence || 0) < 0.6 || (r.contactConfidence || 0) < 0.6);
+      setLowConfidenceRows(low);
+      setConfirmLowConfidence(false);
       const dupes = valid.filter((r) => existingList.some((d) => (isCustomer ? d.company.trim().toLowerCase() === r.company.trim().toLowerCase() : d.docNo === r.docNo)));
       setDuplicates(dupes);
       const initialRes = {};
@@ -1874,11 +2141,13 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
   }
 
   function finalizeImport() {
+    if (!importAgent) { setFileError("Please select an agent before importing."); setStep("confirm"); return; }
+    if (!importPhone) { setFileError("Please select a sending phone before importing."); setStep("confirm"); return; }
     setImportingLabel(`Importing ${validRows.length} record${validRows.length !== 1 ? "s" : ""} into ${targetLabel}...`);
     setStep("importing");
     setTimeout(() => {
       try {
-        const res = onCommit({ docType: presetType, fileName, rows: validRows, resolutions, agentName: importAgent });
+        const res = onCommit({ docType: presetType, fileName, rows: validRows, resolutions, agentName: importAgent, phoneId: importPhone });
         setResult({ ...res, totalRows: rawRows.length, errorCount: errorRows.length });
         setStep("done");
       } catch (err) {
@@ -1887,6 +2156,33 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
       }
     }, 500);
   }
+
+  // Heuristics: flag unusual company or person-in-charge names so importer can correct them.
+  const isUnusualCompany = (name) => {
+    if (!name) return true;
+    const s = String(name).trim();
+    if (s.length < 3) return true;
+    const lower = s.toLowerCase();
+    // Common junk/metadata tokens that look like counts, statuses or notes rather than company names
+    const junk = ["employee", "employees", "license", "resign", "resigned", "active", "inactive", "unlimited", "companies", "companys", "no of", "no.", "total", "qty", "quantity"];
+    if (/^\s*(?:n\/a|na|customer|company|unknown)\b/i.test(s)) return true;
+    if (junk.some((k) => lower.includes(k))) return true;
+    // If there are more digits than letters, probably not a company name
+    const digits = (s.match(/\d/g) || []).length;
+    const letters = (s.match(/[a-zA-Z]/g) || []).length;
+    if (digits > letters) return true;
+    // Sentences or short fragments that contain verbs or punctuation are suspicious
+    if (/[.!?]/.test(s) || /\b(is|are|has|have|includes|includes)\b/i.test(s)) return true;
+    if (!/[A-Za-z]/.test(s)) return true;
+    return false;
+  };
+  const isUnusualPerson = (name) => {
+    if (!name) return true;
+    const s = String(name).trim();
+    if (s.length < 2) return true;
+    if (/^\s*(?:n\/a|na|unknown)\b/i.test(s)) return true;
+    return false;
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -1899,12 +2195,21 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
         <ImportTypeTab active={presetType === "Quotation"} label="Quotation Import" onClick={() => { setPresetType("Quotation"); reset(); }} />
       </div>
       <div className="rounded-xl border bg-white p-4 flex items-center gap-3" style={{ borderColor: LINE }}>
-        <label className="text-xs font-medium" style={{ color: INK }}>Assign imported quotation to agent</label>
-        <select value={importAgent} onChange={(e) => setImportAgent(e.target.value)} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}>
-          <option value="">---</option>
-          {agents.filter((agent) => agent.active).map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}
-        </select>
-        <span className="text-[11px]" style={{ color: "#9A9AA0" }}>Choose an agent before importing.</span>
+        <div className="flex items-center gap-3">
+          <label className="text-xs font-medium" style={{ color: INK }}>Assign imported quotation to agent <span style={{ color: RED }}>*</span></label>
+          <select value={importAgent} onChange={(e) => { setImportAgent(e.target.value); setFileError(""); }} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: importAgent ? LINE : RED }}>
+            <option value="">---</option>
+            {agents.filter((agent) => agent.active).map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="text-xs font-medium" style={{ color: INK }}>Sending phone <span style={{ color: RED }}>*</span></label>
+          <select value={importPhone} onChange={(e) => { setImportPhone(e.target.value); setFileError(""); }} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: importPhone ? LINE : RED }}>
+            <option value="">---</option>
+            {phones && phones.filter((p) => p.active).map((p) => <option key={p.id || p.number} value={p.id || p.number}>{p.name || p.number} · {p.number}</option>)}
+          </select>
+        </div>
+        <span className="text-[11px]" style={{ color: "#9A9AA0" }}>Agent and sending phone are required before importing.</span>
       </div>
 
       <StepBar step={step} />
@@ -1971,6 +2276,12 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
 
       {step === "preview" && (
         <div className="flex flex-col gap-4">
+          {fileError && (
+            <div className="rounded-xl border p-3" style={{ borderColor: RED, background: RED_SOFT }}>
+              <div className="text-sm font-semibold" style={{ color: RED }}>Action required</div>
+              <div className="text-xs" style={{ color: "#8A3B3B" }}>{fileError}</div>
+            </div>
+          )}
           <div className="rounded-xl border bg-white p-4" style={{ borderColor: LINE }}>
             <div className="flex items-center justify-between mb-3">
               <div className="text-sm font-semibold flex items-center gap-1.5" style={{ color: INK }}><FileText size={15} style={{ color: TEAL }} /> {fileName}</div>
@@ -1978,13 +2289,42 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
             </div>
             <div className="text-xs mb-2 font-medium" style={{ color: "#6B6C72" }}>Detected PDF fields in import sequence. Check and correct them before continuing.</div>
             <div className="grid grid-cols-2 gap-2.5">
-              {fields.map((f) => (
-                <div key={f.key} className="flex items-center gap-2">
-                  <div className="w-40 text-xs shrink-0" style={{ color: INK }}>{f.label}{f.required && <span style={{ color: RED }}> *</span>}</div>
-                  <ArrowRight size={12} style={{ color: "#C7C6BE" }} />
-                  <input type={f.key === "date" ? "date" : "text"} value={mapping[f.key] ? (f.key === "date" ? parseDocumentDate(rawRows[0]?.[mapping[f.key]]) || "" : rawRows[0]?.[mapping[f.key]] || "") : ""} onChange={(e) => setRawRows((prev) => prev.map((row, i) => i === 0 ? { ...row, [mapping[f.key]]: e.target.value } : row))} className="flex-1 text-xs rounded-md border px-2 py-1.5 outline-none bg-white" style={{ borderColor: LINE }} placeholder={`Enter ${f.label.toLowerCase()}`} />
-                </div>
-              ))}
+              {fields.map((f) => {
+                const sampleVal = mapping[f.key] ? (f.key === "date" ? parseDocumentDate(rawRows[0]?.[mapping[f.key]]) || "" : rawRows[0]?.[mapping[f.key]] || "") : "";
+                const sampleConf = rawConfidences[0] && mapping[f.key] ? (rawConfidences[0][mapping[f.key]] ?? 0) : 0;
+                const companyFlag = f.key === "company" && isUnusualCompany(sampleVal);
+                const personFlag = f.key === "contactName" && isUnusualPerson(sampleVal);
+                const confPercent = Math.round((sampleConf || 0) * 100);
+                const confStyle = sampleConf >= 0.8 ? {} : sampleConf >= 0.6 ? { borderColor: AMBER } : { borderColor: RED };
+                return (
+                  <div key={f.key} className="flex items-center gap-2">
+                    <div className="w-40 text-xs shrink-0" style={{ color: INK }}>{f.label}{f.required && <span style={{ color: RED }}> *</span>}</div>
+                    <ArrowRight size={12} style={{ color: "#C7C6BE" }} />
+                    <div className="flex-1">
+                      {f.key === "category" ? (
+                        <select value={sampleVal} onChange={(e) => {
+                          const val = e.target.value;
+                          // ensure mapping points to a header so validation reads the value
+                          const headerName = mapping[f.key] || "Quotation Category";
+                          if (!mapping[f.key]) setMapping((m) => ({ ...m, [f.key]: headerName }));
+                          if (!headers.includes(headerName)) setHeaders((hs) => [...hs, headerName]);
+                          setRawRows((prev) => prev.map((row, i) => ({ ...row, [headerName]: i === 0 ? val : (row[headerName] || "") })));
+                        }} className="w-full text-xs rounded-md border px-2 py-1.5 outline-none bg-white" style={companyFlag || personFlag ? { borderColor: RED } : confStyle}>
+                          <option value="">-- select --</option>
+                          <option value="Account">Account</option>
+                          <option value="Payroll">Payroll</option>
+                        </select>
+                      ) : (
+                        <input type={f.key === "date" ? "date" : "text"} value={sampleVal} onChange={(e) => setRawRows((prev) => prev.map((row, i) => i === 0 ? { ...row, [mapping[f.key]]: e.target.value } : row))} className="w-full text-xs rounded-md border px-2 py-1.5 outline-none bg-white" style={companyFlag || personFlag ? { borderColor: RED } : confStyle} placeholder={`Enter ${f.label.toLowerCase()}`} />
+                      )}
+                      <div className="flex items-center justify-between mt-1">
+                        {(companyFlag || personFlag) && <div className="text-[11px]" style={{ color: RED }}>{f.key === 'company' ? 'Unusual company name — please verify.' : 'Check person-in-charge name.'}</div>}
+                        {!companyFlag && !personFlag && sampleConf > 0 && <div className="text-[11px]" style={{ color: sampleConf >= 0.8 ? GREEN : sampleConf >= 0.6 ? AMBER : RED }}>{confPercent}% confidence</div>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: LINE }}>
@@ -2063,9 +2403,19 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
               Ready to import <strong style={{ color: INK }}>{validRows.length}</strong> valid row{validRows.length !== 1 ? "s" : ""}
               {duplicates.length > 0 && <> · <strong style={{ color: INK }}>{duplicates.filter((d) => (resolutions[d.keyValue] || "skip") !== "skip").length}</strong> will update/duplicate, <strong style={{ color: INK }}>{duplicates.filter((d) => (resolutions[d.keyValue] || "skip") === "skip").length}</strong> will be skipped</>}
             </div>
+            {lowConfidenceRows.length > 0 && (
+              <div className="text-xs" style={{ color: RED }}>
+                {lowConfidenceRows.length} row(s) have low-confidence Company/Person fields. Please verify them below and check to confirm.
+              </div>
+            )}
             <div className="flex gap-2">
               <button onClick={reset} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
-              <button onClick={finalizeImport} className="text-xs font-medium px-3.5 py-2 rounded-lg flex items-center gap-1.5" style={{ background: INK, color: "white" }}><UploadCloud size={13} /> Import {validRows.length} Records</button>
+              <button onClick={() => setConfirmLowConfidence(false)} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Unconfirm</button>
+              <label className="text-xs flex items-center gap-2" style={{ alignItems: "center" }}>
+                <input type="checkbox" checked={confirmLowConfidence} onChange={(e) => setConfirmLowConfidence(e.target.checked)} />
+                <span style={{ color: "#5C5D63" }}>I confirm low-confidence fields are correct</span>
+              </label>
+              <button onClick={finalizeImport} disabled={!importAgent || !importPhone || (lowConfidenceRows.length > 0 && !confirmLowConfidence)} className="text-xs font-medium px-3.5 py-2 rounded-lg flex items-center gap-1.5" style={!importAgent || !importPhone || (lowConfidenceRows.length > 0 && !confirmLowConfidence) ? { background: "#B7B9C6", color: "white", cursor: "not-allowed" } : { background: INK, color: "white" }}><UploadCloud size={13} /> Import {validRows.length} Records</button>
             </div>
           </div>
         </div>
@@ -2170,12 +2520,18 @@ function ImportHistoryPage({ importHistory, appName, onOpenBatch }) {
 
 /* ------------------------------ Reports page ------------------------------ */
 function ReportsPage({ allDocs }) {
-  const byStatus = ["Due Today", "Overdue", "Upcoming", "Completed", "Won", "Lost", "No Response"].map((s) => ({ name: s, value: allDocs.filter((d) => d.status === s).length })).filter((x) => x.value > 0);
-  const byCategory = ["Account", "Payroll"].map((c) => ({ name: c, value: allDocs.filter((d) => d.category === c).length }));
+  const statuses = ["Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Won", "Lost"];
+  const byStatus = statuses.map((s) => ({ name: s, value: allDocs.filter((d) => d.status === s).length }));
+  const byCategory = ["Account", "Payroll"].map((c) => ({ name: c, value: allDocs.filter((d) => (d.category || "") === c).length }));
   const wonLost = [{ name: "Won", value: allDocs.filter((d) => d.status === "Won").length }, { name: "Lost", value: allDocs.filter((d) => d.status === "Lost").length }];
   const weeks = [4, 3, 2, 1, 0].map((w) => {
     const label = w === 0 ? "This week" : `${w}w ago`;
-    const count = allDocs.reduce((sum, d) => sum + d.history.filter((h) => { const hd = parseYMD(h.date); const weeksAgo = Math.floor(diffCalendarDays(TODAY, hd) / 7); return weeksAgo === w && h.stage !== "Sent"; }).length, 0);
+    const count = allDocs.reduce((sum, d) => sum + (d.history || []).filter((h) => {
+      if (!h || !h.date) return false;
+      const hd = parseYMD(h.date);
+      const weeksAgo = Math.floor(diffCalendarDays(TODAY, hd) / 7);
+      return weeksAgo === w && h.note && String(h.note).startsWith("Marked as completed");
+    }).length, 0);
     return { name: label, value: count };
   });
   const PIE_COLORS = [AMBER, RED, BLUE, GREEN, TEAL, GRAY, VIOLET];
@@ -2194,7 +2550,7 @@ function ReportsPage({ allDocs }) {
             <PieChart><Pie data={byStatus} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>{byStatus.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} /></PieChart>
           </ResponsiveContainer>
         </ChartCard>
-        <ChartCard title="Quotations & Orders by Category">
+        <ChartCard title="Quotations by Category">
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={byCategory}><CartesianGrid strokeDasharray="3 3" stroke={LINE} vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><Tooltip /><Bar dataKey="value" fill={TEAL} radius={[6, 6, 0, 0]} barSize={60} /></BarChart>
           </ResponsiveContainer>
