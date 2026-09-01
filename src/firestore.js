@@ -38,20 +38,62 @@ const reportError = (operation, error) => {
 
 const run = (operation, callback) => callback().catch((error) => reportError(operation, error));
 
-const quotationFields = (record) => ({
-  docDate: record.date || record.docDate || "",
-  companyName: record.company || record.companyName || "",
-  personInCharge: record.contactName || record.personInCharge || "",
-  phone: record.phone || "",
-  docNo: record.docNo || "",
-  totalAmount: Number(record.amount ?? record.totalAmount ?? 0),
-  followupStage: record.completedStages ?? record.followupStage ?? 0,
-  nextFollowup: record.rescheduleDate || record.nextFollowup || null,
-  lastFollowupDate: record.lastFollowupDate || record.lastFollowupDate || null,
-  agent: record.assignedAgent || record.agent || record.staff || "",
-  status: record.manualStatus || record.status || record.docStatus || null,
-  category: record.category || record.cat || "",
-});
+const MANUAL_STATUS_VALUES = ["No Response", "Follow Up Later", "Won", "Lost"];
+
+const normalizeManualStatus = (value) => {
+  const next = String(value ?? "").trim();
+  return MANUAL_STATUS_VALUES.includes(next) ? next : null;
+};
+
+const quotationFields = (record = {}) => {
+  const output = {};
+  const includeIfPresent = (key, transform) => {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
+      output[key] = transform(record[key]);
+    }
+  };
+
+  includeIfPresent("docDate", (value) => value ?? "");
+  includeIfPresent("companyName", (value) => value ?? "");
+  includeIfPresent("personInCharge", (value) => value ?? "");
+  includeIfPresent("phone", (value) => value ?? "");
+  includeIfPresent("docNo", (value) => value ?? "");
+  includeIfPresent("totalAmount", (value) => Number(value ?? 0));
+  includeIfPresent("followupStage", (value) => Number(value ?? 0));
+  includeIfPresent("nextFollowup", (value) => value ?? null);
+  includeIfPresent("lastFollowupDate", (value) => value ?? null);
+  includeIfPresent("agent", (value) => value ?? "");
+  includeIfPresent("manualStatus", (value) => normalizeManualStatus(value));
+  includeIfPresent("category", (value) => value ?? "");
+  includeIfPresent("history", (value) => Array.isArray(value) ? value : []);
+
+  if (Object.prototype.hasOwnProperty.call(record, "amount") || Object.prototype.hasOwnProperty.call(record, "totalAmount")) {
+    output.totalAmount = Number(record.amount ?? record.totalAmount ?? 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "date") || Object.prototype.hasOwnProperty.call(record, "docDate")) {
+    output.docDate = record.date ?? record.docDate ?? "";
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "company") || Object.prototype.hasOwnProperty.call(record, "companyName")) {
+    output.companyName = record.company ?? record.companyName ?? "";
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "contactName") || Object.prototype.hasOwnProperty.call(record, "personInCharge")) {
+    output.personInCharge = record.contactName ?? record.personInCharge ?? "";
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "assignedAgent") || Object.prototype.hasOwnProperty.call(record, "agent") || Object.prototype.hasOwnProperty.call(record, "staff")) {
+    output.agent = record.assignedAgent ?? record.agent ?? record.staff ?? "";
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "completedStages") || Object.prototype.hasOwnProperty.call(record, "followupStage")) {
+    output.followupStage = Number(record.completedStages ?? record.followupStage ?? 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "rescheduleDate") || Object.prototype.hasOwnProperty.call(record, "nextFollowup")) {
+    output.nextFollowup = record.rescheduleDate ?? record.nextFollowup ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "manualStatus")) {
+    output.manualStatus = normalizeManualStatus(record.manualStatus);
+  }
+
+  return Object.fromEntries(Object.entries(output).filter(([, value]) => value !== undefined && value !== null && !(typeof value === "string" && value === "")));
+};
 
 const agentFields = (record) => ({ name: record.name || "", active: Boolean(record.active) });
 const phoneFields = (record) => ({ phoneName: record.name || record.phoneName || "", phoneNumber: record.number || record.phoneNumber || "", active: Boolean(record.active ?? true) });
@@ -70,7 +112,11 @@ export const quotationStore = {
   list: () => run("list quotations", () => readCollection(COLLECTIONS.quotations)),
   saveAll: (records) => run("save quotations", () => writeCollection(COLLECTIONS.quotations, records, quotationFields)),
   create: (record) => run("create quotation", () => setDoc(doc(db, COLLECTIONS.quotations, record.id), { ...quotationFields(record), createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true })),
-  update: (id, changes) => run("update quotation", () => setDoc(doc(db, COLLECTIONS.quotations, id), { ...quotationFields(changes), updatedAt: serverTimestamp() }, { merge: true })),
+  update: (id, changes) => run("update quotation", async () => {
+    const patch = quotationFields(changes);
+    const payload = Object.keys(patch).length ? { ...patch, updatedAt: serverTimestamp() } : { updatedAt: serverTimestamp() };
+    await setDoc(doc(db, COLLECTIONS.quotations, id), payload, { merge: true });
+  }),
   remove: (id) => run("delete quotation", () => deleteDoc(doc(db, COLLECTIONS.quotations, id))),
 };
 

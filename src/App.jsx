@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+﻿import React, { useState, useMemo, useRef, useEffect } from "react";
 import {
   LayoutDashboard, FileText, Users, Clock, MessageSquare,
   CalendarDays, BarChart3, Settings as SettingsIcon, Search, Bell, AlertTriangle,
@@ -45,6 +45,8 @@ const GRAY = "#6B6F76";
 const GRAY_SOFT = "#EEEDE8";
 const VIOLET = "#7A5AC2";
 const VIOLET_SOFT = "#EFEAFA";
+const NO_RESPONSE = "#B76A2A";
+const NO_RESPONSE_SOFT = "#FCEFE3";
 
 const STATUS_STYLE = {
   "Due Today": { fg: AMBER, bg: AMBER_SOFT, icon: Clock },
@@ -54,9 +56,22 @@ const STATUS_STYLE = {
   "Follow Up Later": { fg: VIOLET, bg: VIOLET_SOFT, icon: History },
   "Won": { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
   "Lost": { fg: GRAY, bg: GRAY_SOFT, icon: TrendingDown },
-  "No Response": { fg: VIOLET, bg: VIOLET_SOFT, icon: CircleSlash },
+  "No Response": { fg: NO_RESPONSE, bg: NO_RESPONSE_SOFT, icon: CircleSlash },
 };
 
+const ACTION_STYLE = {
+  Reschedule: { fg: BLUE, bg: BLUE_SOFT, icon: CalendarDays },
+  "Follow Up Later": { fg: VIOLET, bg: VIOLET_SOFT, icon: History },
+  "No Response": { fg: NO_RESPONSE, bg: NO_RESPONSE_SOFT, icon: CircleSlash },
+  Completed: { fg: GREEN, bg: GREEN_SOFT, icon: CheckCircle2 },
+  "Customer Responded": { fg: TEAL, bg: TEAL_SOFT, icon: MessageSquare },
+  Won: { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
+  Lost: { fg: GRAY, bg: GRAY_SOFT, icon: TrendingDown },
+};
+
+const MANUAL_QUOTATION_STATUSES = ["No Response", "Follow Up Later", "Won", "Lost"];
+const SYSTEM_QUOTATION_STATUSES = ["Due Today", "Overdue", "Upcoming", "Completed Today"];
+const MAX_HISTORY_EVENTS = 50;
 const DEFAULT_APP_NAME = "AMS-FOLLOWUP";
 
 /* ------------------------------ Date utils ------------------------------ */
@@ -98,15 +113,34 @@ function computeScheduleDates(docDateStr, stages, holidays, state) {
   return dates;
 }
 const money = (n) => `RM ${Number(n || 0).toLocaleString("en-MY")}`;
-const uid = (p) => `${p}${Date.now()}${Math.floor(Math.random() * 10000)}`;
+const uid = (p) => {
+  const randomPart = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${p}${randomPart}`;
+};
 
-function trimHistoryEvents(events, months = 3) {
+const normalizeManualStatus = (value) => {
+  const next = String(value || "").trim();
+  return MANUAL_QUOTATION_STATUSES.includes(next) ? next : null;
+};
+
+const normalizeSystemStatus = (value) => {
+  const next = String(value || "").trim();
+  return SYSTEM_QUOTATION_STATUSES.includes(next) ? next : null;
+};
+
+function trimHistoryEvents(events, maxEvents = MAX_HISTORY_EVENTS) {
   if (!Array.isArray(events)) return [];
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - months);
-  return events.filter((e) => {
-    try { const d = new Date(e.date); return !isNaN(d) && d >= cutoff; } catch (err) { return false; }
+  const filtered = events.filter((event) => {
+    if (!event || !event.date) return false;
+    try {
+      const d = new Date(event.date);
+      return !isNaN(d);
+    } catch (err) {
+      return false;
+    }
   });
+  if (!Number.isFinite(maxEvents) || maxEvents <= 0) return filtered;
+  return filtered.slice(-maxEvents);
 }
 
 /* ------------------------------ Holidays & schedules ------------------------------ */
@@ -350,6 +384,16 @@ function StatusPill({ status }) {
     </span>
   );
 }
+function ActionPill({ action }) {
+  const key = action === "Rescheduled" ? "Reschedule" : action === "Follow Up Later" ? "Follow Up Later" : action === "No Response" ? "No Response" : action === "Completed" ? "Completed" : action === "Customer Responded" ? "Customer Responded" : action;
+  const style = ACTION_STYLE[key] || { fg: INK, bg: LINE, icon: Clock };
+  const Icon = style.icon;
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold whitespace-nowrap" style={{ color: style.fg, background: style.bg }}>
+      <Icon size={11} strokeWidth={2.3} /> {key}
+    </span>
+  );
+}
 function StatCard({ label, value, tint, sub }) {
   return (
     <div className="rounded-xl border p-4 flex flex-col gap-1 bg-white" style={{ borderColor: LINE }}>
@@ -477,7 +521,7 @@ function Console({ appName, setAppName, onSignOut }) {
   const [agents, setAgents] = useState(DEFAULT_AGENTS);
   const [phones, setPhones] = useState(DEFAULT_PHONES);
   const [importHistory, setImportHistory] = useState([]);
-  const [activeFollowup, setActiveFollowup] = useState(null);
+  const [activeFollowupId, setActiveFollowupId] = useState(null);
   const [detailDoc, setDetailDoc] = useState(null);
   const [importPresetType, setImportPresetType] = useState("Quotation");
   const [deleteRequest, setDeleteRequest] = useState(null); // { message, onConfirm }
@@ -528,11 +572,9 @@ function Console({ appName, setAppName, onSignOut }) {
             category: record.category || "",
             completedStages: record.completedStages ?? record.followupStage ?? 0,
             assignedAgent: record.assignedAgent || record.agent || "",
-            // Preserve persisted manual status (stored as `status` or `manualStatus` in Firestore)
-            manualStatus: record.manualStatus || record.status || record.docStatus || null,
-            // Preserve reschedule/next follow-up date
+            manualStatus: normalizeManualStatus(record.manualStatus),
             rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
-            history: trimHistoryEvents(record.history, 3),
+            history: trimHistoryEvents(record.history, MAX_HISTORY_EVENTS),
           })));
           if (storedAgents.length) {
             const userAgents = storedAgents.filter((record) => !((record.id || "").match(/^agent-[1-4]$/) && LEGACY_SAMPLE_AGENTS.has(record.name)));
@@ -603,30 +645,43 @@ function Console({ appName, setAppName, onSignOut }) {
     const currentStage = idx < totalStages ? stages[idx] : null;
     const daysSince = diffCalendarDays(TODAY, parseYMD(doc.date));
     const lastFollowupDate = doc.lastFollowupDate || (idx > 0 ? ymd(dates[idx - 1]) : null);
-    let status;
-    // Terminal manual statuses (Won/Lost) and paused status (Follow Up Later) override date-based status
-    if (doc.manualStatus === "Won" || doc.manualStatus === "Lost" || doc.manualStatus === "Follow Up Later") {
-      status = doc.manualStatus;
+    const manualStatus = normalizeManualStatus(doc.manualStatus);
+    const lastAction = (doc.history || []).slice(-1)[0]?.label || manualStatus || "—";
+
+    let derivedStatus = "Upcoming";
+    if (manualStatus === "Won" || manualStatus === "Lost") {
+      derivedStatus = manualStatus;
+    } else if (lastFollowupDate === ymd(TODAY)) {
+      derivedStatus = "Completed Today";
+    } else if (!nextDate) {
+      derivedStatus = "Upcoming";
     } else {
-      // Completed Today has priority if last follow-up was today
-      if (lastFollowupDate === ymd(TODAY)) {
-        status = "Completed Today";
-      } else if (!nextDate) {
-        // No upcoming follow-up date — treat as Upcoming by default (not Open)
-        status = "Upcoming";
-      } else {
-        const diff = diffCalendarDays(nextDate, TODAY);
-        status = diff === 0 ? "Due Today" : diff < 0 ? "Overdue" : "Upcoming";
-      }
+      const diff = diffCalendarDays(nextDate, TODAY);
+      derivedStatus = diff === 0 ? "Due Today" : diff < 0 ? "Overdue" : "Upcoming";
     }
+
     return {
-      ...doc, docType, stages, dates, totalStages, idx, nextDate, currentStage, daysSince, status, lastFollowupDate,
+      ...doc,
+      docType,
+      stages,
+      dates,
+      totalStages,
+      idx,
+      nextDate,
+      currentStage,
+      daysSince,
+      manualStatus,
+      status: derivedStatus,
+      calculatedStatus: derivedStatus,
+      lastFollowupDate,
+      lastAction,
       customer: { name: doc.contactName || doc.company, company: doc.company, phone: doc.phone, email: doc.email },
     };
   };
 
   const allQuotations = useMemo(() => quotations.map((q) => deriveDoc(q, "Quotation")), [quotations, schedules, holidays, operatingState]);
   const allDocs = useMemo(() => allQuotations, [allQuotations]);
+  const activeFollowup = useMemo(() => (activeFollowupId ? quotations.find((d) => d.id === activeFollowupId) || null : null), [activeFollowupId, quotations]);
 
   if (!dataLoaded) return <LoadingScreen label="Loading your data…" />;
 
@@ -641,38 +696,46 @@ function Console({ appName, setAppName, onSignOut }) {
   };
 
   async function applyAction(doc, docType, action, extra) {
+    const currentDoc = quotations.find((item) => item.id === doc.id) || doc;
     const stages = schedules.quotation;
-    const stageInfo = stages[doc.completedStages];
-    const template = templates.find((t) => t.docType === docType && t.category === doc.category && t.stageCode === stageInfo?.code);
-    const rescheduleDate = extra && extra.rescheduleDate;
+    const stageInfo = stages[currentDoc.completedStages] || null;
+    const template = templates.find((t) => t.docType === docType && t.category === currentDoc.category && t.stageCode === stageInfo?.code) || templates.find((t) => t.docType === docType && t.stageCode === stageInfo?.code);
 
-    // Special-case: edit an existing history entry's note (used to edit customer remarks)
     if (action === "EditHistory") {
       const idx = extra?.index;
       const newNote = extra?.newNote;
       if (typeof idx === "number") {
         const updated = {
-          ...doc,
-          history: (doc.history || []).map((h, i) => (i === idx ? { ...h, note: newNote } : h)),
+          ...currentDoc,
+          history: (currentDoc.history || []).map((h, i) => (i === idx ? { ...h, note: newNote } : h)),
         };
-        setQuotations((prev) => prev.map((d) => (d.id === doc.id ? updated : d)));
+        setQuotations((prev) => prev.map((d) => (d.id === currentDoc.id ? updated : d)));
         try { await quotationStore.update(updated.id, updated); } catch (error) { console.error("[Firestore] Follow-up update failed", error); }
-        setActiveFollowup(updated);
-        showToast(`Remark updated.`);
+        setActiveFollowupId(updated.id);
+        showToast("Remark updated.");
       }
       return;
     }
 
     const makeUpdatedFor = (d, act, params) => {
-      // Handle status-only action
       if (act === "SetStatus") {
-        const updatedStatus = params?.status || d.manualStatus;
-        const evt = { date: ymd(TODAY), stage: stageInfo ? stageInfo.label : "Follow-up", label: `Status set`, note: `Status changed to ${updatedStatus}` };
-        return { ...d, manualStatus: updatedStatus, history: trimHistoryEvents([...(d.history || []), evt], 3) };
+        const updatedStatus = normalizeManualStatus(params?.status || d.manualStatus);
+        if (!updatedStatus) return d;
+        const evt = {
+          date: ymd(TODAY),
+          stage: stageInfo ? stageInfo.label : "Follow-up",
+          label: `Status changed to ${updatedStatus}`,
+          note: `Status changed to ${updatedStatus}`,
+        };
+        return {
+          ...d,
+          manualStatus: updatedStatus,
+          history: trimHistoryEvents([...(d.history || []), evt], MAX_HISTORY_EVENTS),
+        };
       }
 
       let note = params?.message || act;
-      if (act === "Completed") note = "Marked as completed by " + d.staff;
+      if (act === "Completed") note = "Marked as completed by " + (d.staff || d.assignedAgent || "team");
       if (act === "Customer Responded") note = params?.customerRemark || params?.message || "Customer responded.";
       if (act === "Rescheduled") note = `Follow-up rescheduled to ${fmtDate(params?.rescheduleDate)}.`;
       if (act === "Won") note = "Deal marked as Won.";
@@ -681,8 +744,9 @@ function Console({ appName, setAppName, onSignOut }) {
       if (act === "Follow Up Later") note = params?.customerRemark || "Follow up later requested by customer.";
 
       const newHistoryEvent = {
-        date: ymd(TODAY), stage: stageInfo ? stageInfo.label : "Follow-up",
-        label: `${stageInfo ? stageInfo.label : "Follow-up"} (${stageInfo ? stageInfo.tag : ""})`.trim(),
+        date: ymd(TODAY),
+        stage: stageInfo ? stageInfo.label : "Follow-up",
+        label: act === "Completed" ? `Completed: ${stageInfo ? stageInfo.label : "Follow-up"}` : (act === "Rescheduled" ? `Follow-up rescheduled to ${fmtDate(params?.rescheduleDate)}` : (stageInfo ? stageInfo.label : "Follow-up")),
         note,
         customerResponse: act === "Customer Responded" || act === "Follow Up Later",
         template: params?.templateTitle || (template ? template.title : null),
@@ -693,28 +757,26 @@ function Console({ appName, setAppName, onSignOut }) {
         ...d,
         assignedAgent: params?.agentName || d.assignedAgent || d.staff || "",
         sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
-        completedStages: act === "Rescheduled" ? d.completedStages : Math.min((d.completedStages || 0) + (act === "Completed" ? 1 : 0), stages.length),
-        manualStatus: isTerminal ? act : (act === "Follow Up Later" ? "Follow Up Later" : d.manualStatus),
+        completedStages: act === "Completed" ? Math.min((d.completedStages || 0) + 1, stages.length) : d.completedStages,
         rescheduleDate: act === "Rescheduled" ? params?.rescheduleDate : d.rescheduleDate,
-        history: trimHistoryEvents([...(d.history || []), newHistoryEvent], 3),
+        manualStatus: act === "Follow Up Later" ? "Follow Up Later" : (isTerminal ? act : d.manualStatus),
+        history: trimHistoryEvents([...(d.history || []), newHistoryEvent], MAX_HISTORY_EVENTS),
       };
 
       if (act === "Completed") updated.lastFollowupDate = ymd(TODAY);
+      if (act === "No Response") updated.manualStatus = "No Response";
+      if (act === "Won") updated.manualStatus = "Won";
+      if (act === "Lost") updated.manualStatus = "Lost";
       return updated;
     };
 
-    // If the follow-up hasn't been marked completed today, auto-insert Completed step before outcome
-    const needsCompleted = (action !== "Completed" && action !== "EditHistory" && (doc.lastFollowupDate !== ymd(TODAY)));
-    const sequence = [];
-    if (needsCompleted) sequence.push({ act: "Completed", params: {} });
-    sequence.push({ act: action, params: extra || {} });
-    // If caller provided a follow-up outcome to apply after recording a customer response, include it
+    const sequence = [{ act: action, params: extra || {} }];
     if (action === "Customer Responded" && extra?.nextAction) {
       sequence.push({ act: extra.nextAction, params: extra.nextParams || {} });
     }
 
     try {
-      let current = doc;
+      let current = currentDoc;
       for (const step of sequence) {
         const updated = makeUpdatedFor(current, step.act, step.params);
         setQuotations((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
@@ -722,10 +784,10 @@ function Console({ appName, setAppName, onSignOut }) {
         current = updated;
       }
 
-      // Refresh quotations from Firestore to ensure latest server-side state
       const refreshed = await quotationStore.list();
       const mapped = refreshed.map((record) => ({
         ...record,
+        id: record.id || uid("Q-"),
         date: record.date || record.docDate || "",
         company: record.company || record.companyName || "",
         contactName: record.contactName || record.personInCharge || "",
@@ -733,16 +795,15 @@ function Console({ appName, setAppName, onSignOut }) {
         amount: record.amount ?? record.totalAmount ?? 0,
         completedStages: record.completedStages ?? record.followupStage ?? 0,
         assignedAgent: record.assignedAgent || record.agent || "",
-        manualStatus: record.manualStatus || record.status || record.docStatus || null,
+        manualStatus: normalizeManualStatus(record.manualStatus),
         rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
-        history: trimHistoryEvents(record.history, 3),
+        history: trimHistoryEvents(record.history, MAX_HISTORY_EVENTS),
       }));
       setQuotations(mapped);
 
-      // Close follow-up panel, go back to Follow-ups page
-      setActiveFollowup(null);
+      setActiveFollowupId(current.id);
       setPage("followups");
-      showToast(`${action} recorded for ${doc.customer?.company || doc.company}.`);
+      showToast(`${action} recorded for ${currentDoc.customer?.company || currentDoc.company}.`);
     } catch (err) {
       console.error("[Firestore] Follow-up update failed", err);
       showToast("Could not save follow-up. Please try again.");
@@ -757,7 +818,7 @@ function Console({ appName, setAppName, onSignOut }) {
     requestDelete(`Delete ${doc.docType} ${doc.docNo} (${doc.company})? Its follow-up history will be permanently removed.`, () => {
       setFn((prev) => prev.filter((d) => d.id !== doc.id));
       quotationStore.remove(doc.id).catch((error) => console.error("[Firestore] Quotation delete failed", error));
-      if (activeFollowup && activeFollowup.id === doc.id) setActiveFollowup(null);
+      if (activeFollowup && activeFollowup.id === doc.id) setActiveFollowupId(null);
       if (detailDoc && detailDoc.id === doc.id) setDetailDoc(null);
       showToast(`${doc.docType} ${doc.docNo} deleted.`);
     });
@@ -770,7 +831,7 @@ function Console({ appName, setAppName, onSignOut }) {
         setQuotations((prev) => prev.filter((d) => !quoteIds.has(d.id)));
         quoteIds.forEach((id) => quotationStore.remove(id).catch((error) => console.error("[Firestore] Quotation delete failed", error)));
       }
-      if (activeFollowup && docs.some((d) => d.id === activeFollowup.id)) setActiveFollowup(null);
+      if (activeFollowup && docs.some((d) => d.id === activeFollowup.id)) setActiveFollowupId(null);
       if (detailDoc && docs.some((d) => d.id === detailDoc.id)) setDetailDoc(null);
       showToast(`${docs.length} record${docs.length !== 1 ? "s" : ""} deleted.`);
     });
@@ -833,8 +894,9 @@ function Console({ appName, setAppName, onSignOut }) {
       setFn((prev) => {
         let next = [...prev];
         rows.forEach((row) => {
-          const key = `${docType}:${row.docNo}`;
-          const existingIdx = next.findIndex((d) => d.id === key);
+          const normalizedDocNo = String(row.docNo || "").trim().toLowerCase();
+          const existingMatch = normalizedDocNo ? next.find((d) => String(d.docNo || "").trim().toLowerCase() === normalizedDocNo) : null;
+          const existingIdx = existingMatch ? next.indexOf(existingMatch) : -1;
           const resolution = existingIdx !== -1 ? (resolutions[row.docNo] || "skip") : "new";
 
           if (existingIdx !== -1 && resolution === "skip") { skippedCount++; return; }
@@ -844,22 +906,21 @@ function Console({ appName, setAppName, onSignOut }) {
               ...next[existingIdx],
               company: row.company, contactName: row.contactName, phone: row.phone, email: row.email,
               category: row.category || next[existingIdx].category, amount: row.amount, date: row.date,
-              staff: row.staff || next[existingIdx].staff, assignedAgent: agentName || row.agentName || next[existingIdx].assignedAgent || next[existingIdx].staff, docStatus: row.docStatus || next[existingIdx].docStatus,
+              staff: row.staff || next[existingIdx].staff, assignedAgent: agentName || row.agentName || next[existingIdx].assignedAgent || next[existingIdx].staff,
+              manualStatus: normalizeManualStatus(row.manualStatus || next[existingIdx].manualStatus) || next[existingIdx].manualStatus || null,
               sendingPhoneId: row.phoneId || phoneId || next[existingIdx].sendingPhoneId || null,
               source: "PDF Quotation Import", importDate, importFileName: fileName, importBatchId: batchId,
-              // follow-up progress (completedStages / manualStatus / notes / history / rescheduleDate) preserved untouched
             };
             quotationStore.update(next[existingIdx].id, next[existingIdx]).catch((error) => console.error("[Firestore] Quotation update failed", error));
             updatedCount++;
             return;
           }
 
-          const id = existingIdx !== -1 && resolution === "new" ? `${key}-${uid("DUP")}` : key;
           const rec = {
-            id, docType, docNo: row.docNo, company: row.company, contactName: row.contactName, phone: row.phone, email: row.email,
-            category: row.category || "Account", date: row.date, amount: row.amount, staff: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", assignedAgent: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", sendingPhoneId: row.phoneId || phoneId || null, docStatus: row.docStatus || null,
+            id: uid("Q-"), docType, docNo: row.docNo, company: row.company, contactName: row.contactName, phone: row.phone, email: row.email,
+            category: row.category || "Account", date: row.date, amount: row.amount, staff: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", assignedAgent: agentName || row.agentName || row.staff || agents.find((agent) => agent.active)?.name || "Unassigned", sendingPhoneId: row.phoneId || phoneId || null,
             source: "PDF Quotation Import", importDate, importFileName: fileName, importBatchId: batchId,
-            completedStages: 0, manualStatus: null, notes: "", rescheduleDate: null,
+            completedStages: 0, manualStatus: normalizeManualStatus(row.manualStatus) || null, notes: "", rescheduleDate: null,
             history: seedHistory(row.date, 0, stages, holidays, docType, operatingState),
           };
           quotationStore.create(rec).catch((error) => console.error("[Firestore] Quotation create failed", error));
@@ -934,7 +995,7 @@ function Console({ appName, setAppName, onSignOut }) {
         <div className="px-8 py-6">
           {page === "dashboard" && (
             <Dashboard counts={counts} allQuotations={allQuotations} todaysFollowups={todaysFollowups}
-              onOpenFollowup={setActiveFollowup} onOpenDetail={setDetailDoc} lastImport={lastImport} totalRecords={totalRecords}
+              onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} lastImport={lastImport} totalRecords={totalRecords}
               onGoImport={() => setPage("import")} />
           )}
           {page === "import" && (
@@ -942,7 +1003,7 @@ function Console({ appName, setAppName, onSignOut }) {
               existingQuotations={quotations} agents={agents} phones={phones} onCommit={commitImport} />
           )}
           {page === "customers" && <CustomersPage allDocs={allDocs} customers={customers} onDeleteCustomer={deleteCustomer} onBulkDeleteCustomers={bulkDeleteCustomers} onOpenCustomerDocs={(company, name) => setCustomerDrill({ company, name })} />}
-          {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={setActiveFollowup} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
+          {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
           {page === "templates" && <TemplatesPage templates={templates} setTemplates={setTemplates} onDeleteTemplate={deleteTemplate} />}
           {page === "holidays" && <HolidaysPage holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} />}
           {page === "importhistory" && <ImportHistoryPage importHistory={importHistory} appName={appName} onOpenBatch={setBatchDrill} />}
@@ -951,8 +1012,8 @@ function Console({ appName, setAppName, onSignOut }) {
         </div>
       </main>
 
-      {activeFollowup && <FollowupPanel doc={activeFollowup} templates={templates} agents={agents} phones={phones} onClose={() => setActiveFollowup(null)} onAction={(action, extra) => applyAction(activeFollowup, activeFollowup.docType, action, extra)} />}
-      {detailDoc && <DetailDrawer doc={detailDoc} onClose={() => setDetailDoc(null)} onOpenFollowup={(d) => { setDetailDoc(null); setActiveFollowup(d); }} onUpdateCategory={(cat) => updateCategory(detailDoc, detailDoc.docType, cat)} />}
+      {activeFollowup && <FollowupPanel doc={activeFollowup} templates={templates} agents={agents} phones={phones} onClose={() => setActiveFollowupId(null)} onAction={(action, extra) => applyAction(activeFollowup, activeFollowup.docType, action, extra)} />}
+      {detailDoc && <DetailDrawer doc={detailDoc} onClose={() => setDetailDoc(null)} onOpenFollowup={(d) => { setDetailDoc(null); setActiveFollowupId(d.id); }} onUpdateCategory={(cat) => updateCategory(detailDoc, detailDoc.docType, cat)} />}
       {customerDrill && (
         <CustomerDocsDrawer customer={customerDrill} docs={drillDocs} onClose={() => setCustomerDrill(null)}
           onOpenDetail={(d) => { setCustomerDrill(null); setDetailDoc(d); }} />
@@ -1283,7 +1344,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
     }
     return true;
   });
-  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Completed Today", "Won", "Lost", "No Response"];
+  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Won", "Lost", "No Response"];
   const isDirty = JSON.stringify(draft) !== JSON.stringify(applied);
   const isFilteredAtAll = Object.entries(applied).some(([k, v]) => v !== EMPTY_FILTERS[k]);
 
@@ -1624,16 +1685,20 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
             <div className="grid grid-cols-2 gap-3 text-xs">
             <Field label="Document No." value={doc.docNo} />
             <Field label="Follow-up Stage" value={stageInfo ? `${stageInfo.label} (${stageInfo.tag})` : "Completed"} />
+            <Field label="Next Follow-up Date" value={doc.nextDate ? fmtDate(ymd(doc.nextDate)) : "—"} />
+            <Field label="Last Action" value={doc.lastAction || "—"} />
             <Field label="Document Date" value={fmtDate(doc.date)} />
             <Field label="Amount" value={money(doc.amount)} />
             <div><div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Agent</div><select value={agentName} onChange={(e) => setAgentName(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="">Select agent</option>{agents.filter((agent) => agent.active || agent.name === agentName).map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}</select></div>
             <div><div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Sending phone</div><select value={phoneId} onChange={(e) => setPhoneId(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="">Select phone</option>{phones.filter((phone) => phone.active || phone.id === phoneId).map((phone) => <option key={phone.id} value={phone.id}>{phone.name} · {phone.number}</option>)}</select></div>
             <div>
               <div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Status</div>
-              <select value={doc.manualStatus || doc.status} onChange={(e) => setStatus(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}>
-                {Object.keys(STATUS_STYLE).map((s) => <option key={s} value={s}>{s}</option>)}
+              <select value={doc.manualStatus || ""} onChange={(e) => setStatus(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}>
+                <option value="">No manual status</option>
+                {MANUAL_QUOTATION_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
+            <Field label="Schedule Status" custom={<StatusPill status={doc.status} />} />
           </div>
           <div className="rounded-lg border p-3" style={{ borderColor: LINE, background: "#FBFAF7" }}>
             <div className="flex items-center justify-between mb-2">
@@ -1678,8 +1743,9 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
           <div className="px-5 py-4 border-t grid grid-cols-2 gap-2" style={{ borderColor: LINE }}>
           <ActionBtn label="Mark as Completed" onClick={() => submitAction("Completed")} primary />
           <ActionBtn label="Customer Response" onClick={() => setCustomerResponseOpen(true)} />
-          <ActionBtn label="Reschedule" onClick={() => setReschedulingOpen((v) => !v)} />
-          <ActionBtn label="No Response" onClick={() => submitAction("No Response")} />
+          <ActionBtn label="Reschedule" onClick={() => setReschedulingOpen((v) => !v)} tint={BLUE} />
+          <ActionBtn label="Follow Up Later" onClick={() => submitAction("Follow Up Later")} tint={VIOLET} />
+          <ActionBtn label="No Response" onClick={() => submitAction("No Response")} tint={NO_RESPONSE} />
           <ActionBtn label="Won" onClick={() => submitAction("Won")} tint={GREEN} />
           <ActionBtn label="Lost" onClick={() => submitAction("Lost")} tint={GRAY} />
         </div>
@@ -1694,11 +1760,11 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
                 <button onClick={() => setCustomerResponseOpen(false)} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
                 <button onClick={() => confirmCustomerResponse()} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Save Remark Only</button>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => confirmCustomerResponse("No Response")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: "white", color: "#3A3B41", borderColor: LINE }}>No Response</button>
-                  <button onClick={() => confirmCustomerResponse("Follow Up Later")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: AMBER_SOFT, color: AMBER, borderColor: LINE }}>Follow Up Later</button>
-                  <button onClick={() => { setRemarkPendingReschedule(true); setCustomerResponseOpen(false); setReschedulingOpen(true); }} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: BLUE_SOFT, color: BLUE, borderColor: LINE }}>Reschedule</button>
-                  <button onClick={() => confirmCustomerResponse("Won")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GREEN_SOFT, color: GREEN, borderColor: LINE }}>Won</button>
-                  <button onClick={() => confirmCustomerResponse("Lost")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GRAY, color: "white", borderColor: LINE }}>Lost</button>
+                  <button onClick={() => confirmCustomerResponse("No Response")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: NO_RESPONSE_SOFT, color: NO_RESPONSE, borderColor: NO_RESPONSE }}>No Response</button>
+                  <button onClick={() => confirmCustomerResponse("Follow Up Later")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: VIOLET_SOFT, color: VIOLET, borderColor: VIOLET }}>Follow Up Later</button>
+                  <button onClick={() => { setRemarkPendingReschedule(true); setCustomerResponseOpen(false); setReschedulingOpen(true); }} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: BLUE_SOFT, color: BLUE, borderColor: BLUE }}>Reschedule</button>
+                  <button onClick={() => confirmCustomerResponse("Won")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GREEN_SOFT, color: GREEN, borderColor: GREEN }}>Won</button>
+                  <button onClick={() => confirmCustomerResponse("Lost")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GRAY_SOFT, color: GRAY, borderColor: GRAY }}>Lost</button>
                 </div>
               </div>
             </div>
@@ -1723,9 +1789,15 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
   );
 }
 function ActionBtn({ label, onClick, primary, tint }) {
+  const isTinted = Boolean(tint);
+  const style = primary
+    ? { background: INK, color: "white", borderColor: INK }
+    : isTinted
+      ? { background: tint === BLUE ? BLUE_SOFT : tint === VIOLET ? VIOLET_SOFT : tint === NO_RESPONSE ? NO_RESPONSE_SOFT : tint === GREEN ? GREEN_SOFT : tint === GRAY ? GRAY_SOFT : "white", color: tint, borderColor: tint }
+      : { background: "white", color: "#3A3B41", borderColor: LINE };
   return (
     <button type="button" onClick={onClick} className="text-xs font-medium py-2.5 rounded-lg border"
-      style={primary ? { background: INK, color: "white", borderColor: INK } : tint ? { background: "white", color: tint, borderColor: tint } : { background: "white", color: "#3A3B41", borderColor: LINE }}>
+      style={style}>
       {label}
     </button>
   );
@@ -1767,6 +1839,8 @@ function DetailDrawer({ doc, onClose, onOpenFollowup, onUpdateCategory }) {
               } />
               <Field label="Agent" value={doc.assignedAgent || doc.staff || "Unassigned"} />
               <Field label="Status" custom={<StatusPill status={doc.status} />} />
+              <Field label="Next Follow-up Date" value={doc.nextDate ? fmtDate(ymd(doc.nextDate)) : "—"} />
+              <Field label="Last Action" value={doc.lastAction || "—"} />
             </div>
           </section>
           <section>
@@ -1802,8 +1876,11 @@ function Timeline({ events, onEditEvent }) {
             {i < events.length - 1 && <div className="w-px flex-1" style={{ background: LINE }} />}
           </div>
           <div className="pb-4">
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-semibold" style={{ color: INK }}>{e.label} <span className="font-normal" style={{ color: "#9A9AA0" }}>· {fmtDate(e.date)}</span></div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <ActionPill action={e.label} />
+                <div className="text-xs font-semibold" style={{ color: INK }}>{e.label} <span className="font-normal" style={{ color: "#9A9AA0" }}>· {fmtDate(e.date)}</span></div>
+              </div>
               {onEditEvent && e.customerResponse && (
                 <button onClick={() => onEditEvent(i)} className="text-[11px] underline" style={{ color: TEAL }}>Edit</button>
               )}
@@ -2104,7 +2181,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
         const rec = {
           rowIndex: i + 2, keyValue: docNo, docNo, date: dateYMD, company, contactName: String(get("contactName") || "").trim(),
           phone: String(get("phone") || "").trim(), email: String(get("email") || "").trim(),
-          category, amount: isNaN(amount) ? 0 : amount, docStatus: String(get("docStatus") || "").trim(), staff: String(get("staff") || "").trim(),
+          category, amount: isNaN(amount) ? 0 : amount, manualStatus: normalizeManualStatus(String(get("manualStatus") || "")) || null, staff: String(get("staff") || "").trim(),
           categoryMissing: !category,
         };
         // attach confidences from rawConfidences (if available)
