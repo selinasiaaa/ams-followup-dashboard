@@ -16,6 +16,7 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { browserLocalPersistence, onAuthStateChanged, setPersistence, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth, FIREBASE_LOGIN_EMAIL } from "./firebase";
 import { agentStore, customerStore, phoneStore, quotationStore, templateStore } from "./firestore";
+import { EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -279,8 +280,7 @@ function parseDocumentDate(value) {
     return null;
   }
   const s = String(value).trim();
-  const d = new Date(s);
-  if (!isNaN(d)) return ymd(d);
+
   const m = s.match(/^(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{2,4})$/);
   if (m) {
     let [, dd, mm, yy] = m;
@@ -288,6 +288,11 @@ function parseDocumentDate(value) {
     const d2 = new Date(Number(yy), Number(mm) - 1, Number(dd));
     if (!isNaN(d2)) return ymd(d2);
   }
+
+  // Fallback: native Date parsing for unambiguous formats (e.g. ISO "2026-09-02")
+  const d = new Date(s);
+  if (!isNaN(d)) return ymd(d);
+
   return null;
 }
 
@@ -446,11 +451,26 @@ function IconBtn({ icon: Icon, label, onClick, danger }) {
 function DeleteConfirmModal({ request, onCancel, onConfirm }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const submit = () => {
-    if (password === VALID_PASSWORD) { onConfirm(); setPassword(""); setError(""); }
-    else setError("Incorrect password.");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (!password) { setError("Enter your password."); return; }
+    setIsSubmitting(true);
+    try {
+      const credential = EmailAuthProvider.credential(FIREBASE_LOGIN_EMAIL, password);
+      await reauthenticateWithCredential(auth.currentUser, credential);
+      onConfirm();
+      setPassword("");
+    } catch (err) {
+      setError("Incorrect password.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
+
   const handleKeyDown = (e) => { if (e.key === "Enter") submit(); };
+
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(18,23,43,0.5)" }}>
       <div className="bg-white rounded-2xl w-full max-w-sm p-6 flex flex-col gap-3 shadow-2xl">
@@ -460,7 +480,7 @@ function DeleteConfirmModal({ request, onCancel, onConfirm }) {
           <div className="text-xs mt-1" style={{ color: "#6B6C72" }}>{request.message}</div>
         </div>
         <div>
-          <label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Enter password to confirm</label>
+          <label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Enter your login password to confirm</label>
           <div className="flex items-center gap-2 rounded-lg px-3 py-2.5 border" style={{ borderColor: error ? RED : LINE }}>
             <Lock size={13} style={{ color: "#9A9AA0" }} />
             <input
@@ -471,13 +491,16 @@ function DeleteConfirmModal({ request, onCancel, onConfirm }) {
               onKeyDown={handleKeyDown}
               placeholder="Password"
               className="flex-1 text-sm outline-none bg-transparent"
+              disabled={isSubmitting}
             />
           </div>
           {error && <div className="text-xs mt-1 flex items-center gap-1" style={{ color: RED }}><AlertCircle size={11} /> {error}</div>}
         </div>
         <div className="flex justify-end gap-2 mt-1">
-          <button onClick={onCancel} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
-          <button onClick={submit} className="text-xs font-medium px-3.5 py-2 rounded-lg" style={{ background: RED, color: "white" }}>Delete</button>
+          <button onClick={onCancel} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }} disabled={isSubmitting}>Cancel</button>
+          <button onClick={submit} className="text-xs font-medium px-3.5 py-2 rounded-lg disabled:opacity-60" style={{ background: RED, color: "white" }} disabled={isSubmitting}>
+            {isSubmitting ? "Checking..." : "Delete"}
+          </button>
         </div>
       </div>
     </div>
@@ -619,21 +642,34 @@ function Console({ appName, setAppName, onSignOut }) {
   }, [appName, operatingState, holidays, schedules, customers, importHistory, dataLoaded]);
 
   function resetToSampleData() {
-    requestDelete("Reset AMS-FOLLOWUP back to the original sample dataset? This clears everything imported, edited, or deleted — including data saved in storage — and cannot be undone.", async () => {
-      try { await window.storage.delete(STORAGE_KEY); } catch (err) { /* nothing saved yet */ }
-      setAppName(DEFAULT_APP_NAME);
-      setOperatingState(DEFAULT_OPERATING_STATE);
-      setHolidays(DEFAULT_HOLIDAYS);
-      setSchedules(DEFAULT_SCHEDULES);
-      setTemplates(INITIAL_TEMPLATES);
-      setQuotations([]);
-      setCustomers([]);
-      setAgents(DEFAULT_AGENTS);
-      setPhones(DEFAULT_PHONES);
-      setImportHistory([]);
-      showToast("All quotation data was cleared.");
-    });
-  }
+  requestDelete("Reset AMS-FOLLOWUP back to the original sample dataset? This clears everything imported, edited, or deleted — including data saved in Firestore — and cannot be undone.", async () => {
+    try { await window.storage.delete(STORAGE_KEY); } catch (err) { /* nothing saved yet */ }
+    try {
+      const [existingQuotations, existingCustomers, existingAgents, existingPhones] = await Promise.all([
+        quotationStore.list(), customerStore.list(), agentStore.list(), phoneStore.list(),
+      ]);
+      await Promise.all([
+        ...existingQuotations.map((q) => quotationStore.remove(q.id)),
+        ...existingCustomers.map((c) => customerStore.remove(c.id)),
+        ...existingAgents.map((a) => agentStore.remove(a.id)),
+        ...existingPhones.map((p) => phoneStore.remove(p.id)),
+      ]);
+    } catch (err) {
+      console.error("[Firestore] Reset failed to clear remote data", err);
+    }
+    setAppName(DEFAULT_APP_NAME);
+    setOperatingState(DEFAULT_OPERATING_STATE);
+    setHolidays(DEFAULT_HOLIDAYS);
+    setSchedules(DEFAULT_SCHEDULES);
+    setTemplates(INITIAL_TEMPLATES);
+    setQuotations([]);
+    setCustomers([]);
+    setAgents(DEFAULT_AGENTS);
+    setPhones(DEFAULT_PHONES);
+    setImportHistory([]);
+    showToast("All quotation data was cleared.");
+  });
+}
 
   const deriveDoc = (doc, docType) => {
     const stages = schedules.quotation;
@@ -641,7 +677,7 @@ function Console({ appName, setAppName, onSignOut }) {
     const totalStages = stages.length;
     const idx = doc.completedStages;
     const scheduledNext = idx < totalStages ? dates[idx] : null;
-    const nextDate = doc.rescheduleDate && idx < totalStages ? parseYMD(doc.rescheduleDate) : scheduledNext;
+    const nextDate = doc.rescheduleDate ? parseYMD(doc.rescheduleDate) : scheduledNext;
     const currentStage = idx < totalStages ? stages[idx] : null;
     const daysSince = diffCalendarDays(TODAY, parseYMD(doc.date));
     const lastFollowupDate = doc.lastFollowupDate || (idx > 0 ? ymd(dates[idx - 1]) : null);
@@ -650,6 +686,8 @@ function Console({ appName, setAppName, onSignOut }) {
 
     let derivedStatus = "Upcoming";
     if (manualStatus === "Won" || manualStatus === "Lost") {
+      derivedStatus = manualStatus;
+    } else if (manualStatus === "No Response" || manualStatus === "Follow Up Later") {
       derivedStatus = manualStatus;
     } else if (lastFollowupDate === ymd(TODAY)) {
       derivedStatus = "Completed Today";
@@ -681,7 +719,10 @@ function Console({ appName, setAppName, onSignOut }) {
 
   const allQuotations = useMemo(() => quotations.map((q) => deriveDoc(q, "Quotation")), [quotations, schedules, holidays, operatingState]);
   const allDocs = useMemo(() => allQuotations, [allQuotations]);
-  const activeFollowup = useMemo(() => (activeFollowupId ? quotations.find((d) => d.id === activeFollowupId) || null : null), [activeFollowupId, quotations]);
+  const activeFollowup = useMemo(
+    () => (activeFollowupId ? allQuotations.find((d) => d.id === activeFollowupId) || null : null),
+    [activeFollowupId, allQuotations]
+  );
 
   if (!dataLoaded) return <LoadingScreen label="Loading your data…" />;
 
@@ -718,20 +759,18 @@ function Console({ appName, setAppName, onSignOut }) {
     }
 
     const makeUpdatedFor = (d, act, params) => {
-      if (act === "SetStatus") {
-        const updatedStatus = normalizeManualStatus(params?.status || d.manualStatus);
-        if (!updatedStatus) return d;
-        const evt = {
-          date: ymd(TODAY),
-          stage: stageInfo ? stageInfo.label : "Follow-up",
-          label: `Status changed to ${updatedStatus}`,
-          note: `Status changed to ${updatedStatus}`,
-        };
-        return {
-          ...d,
-          manualStatus: updatedStatus,
-          history: trimHistoryEvents([...(d.history || []), evt], MAX_HISTORY_EVENTS),
-        };
+      if (act === "SetStatus") { 
+        const updatedStatus = normalizeManualStatus(params?.status); // no fallback to d.manualStatus
+        return { 
+          ...d, 
+          manualStatus: updatedStatus, // null when cleared 
+          history: trimHistoryEvents([...(d.history || []), { 
+            date: ymd(TODAY), 
+            stage: stageInfo ? stageInfo.label : "Follow-up", 
+            label: updatedStatus ? `Status changed to ${updatedStatus}` : "Manual status cleared", 
+            note: updatedStatus ? `Status changed to ${updatedStatus}` : "Manual status cleared", 
+          }], MAX_HISTORY_EVENTS), 
+        }; 
       }
 
       let note = params?.message || act;
@@ -759,7 +798,11 @@ function Console({ appName, setAppName, onSignOut }) {
         sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
         completedStages: act === "Completed" ? Math.min((d.completedStages || 0) + 1, stages.length) : d.completedStages,
         rescheduleDate: act === "Rescheduled" ? params?.rescheduleDate : d.rescheduleDate,
-        manualStatus: act === "Follow Up Later" ? "Follow Up Later" : (isTerminal ? act : d.manualStatus),
+        manualStatus: act === "Follow Up Later" 
+          ? "Follow Up Later" 
+          : act === "Rescheduled" 
+            ? null 
+            : (isTerminal ? act : d.manualStatus),
         history: trimHistoryEvents([...(d.history || []), newHistoryEvent], MAX_HISTORY_EVENTS),
       };
 
@@ -969,7 +1012,6 @@ function Console({ appName, setAppName, onSignOut }) {
           <NavItem icon={LayoutDashboard} label="Dashboard" active={page === "dashboard"} onClick={() => setPage("dashboard")} />
           <NavItem icon={UploadCloud} label="Import Data" active={page === "import"} onClick={() => setPage("import")} />
           <NavItem icon={Clock} label="Follow-ups" active={page === "followups"} onClick={() => setPage("followups")} count={counts.dueToday + counts.overdue} />
-          <NavItem icon={Users} label="Customers" active={page === "customers"} onClick={() => setPage("customers")} />
           <NavItem icon={MessageSquare} label="Message Templates" active={page === "templates"} onClick={() => setPage("templates")} />
           <NavItem icon={CalendarDays} label="Holiday Calendar" active={page === "holidays"} onClick={() => setPage("holidays")} />
           <NavItem icon={History} label="Import History" active={page === "importhistory"} onClick={() => setPage("importhistory")} />
@@ -1002,7 +1044,6 @@ function Console({ appName, setAppName, onSignOut }) {
             <ImportPage schedules={schedules} holidays={holidays} presetType={importPresetType} setPresetType={setImportPresetType}
               existingQuotations={quotations} agents={agents} phones={phones} onCommit={commitImport} />
           )}
-          {page === "customers" && <CustomersPage allDocs={allDocs} customers={customers} onDeleteCustomer={deleteCustomer} onBulkDeleteCustomers={bulkDeleteCustomers} onOpenCustomerDocs={(company, name) => setCustomerDrill({ company, name })} />}
           {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
           {page === "templates" && <TemplatesPage templates={templates} setTemplates={setTemplates} onDeleteTemplate={deleteTemplate} />}
           {page === "holidays" && <HolidaysPage holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} />}
@@ -1691,13 +1732,9 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
             <Field label="Amount" value={money(doc.amount)} />
             <div><div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Agent</div><select value={agentName} onChange={(e) => setAgentName(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="">Select agent</option>{agents.filter((agent) => agent.active || agent.name === agentName).map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}</select></div>
             <div><div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Sending phone</div><select value={phoneId} onChange={(e) => setPhoneId(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="">Select phone</option>{phones.filter((phone) => phone.active || phone.id === phoneId).map((phone) => <option key={phone.id} value={phone.id}>{phone.name} · {phone.number}</option>)}</select></div>
-            <div>
-              <div className="text-[11px] mb-1" style={{ color: "#9A9AA0" }}>Status</div>
-              <select value={doc.manualStatus || ""} onChange={(e) => setStatus(e.target.value)} className="w-full text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}>
-                <option value="">No manual status</option>
-                {MANUAL_QUOTATION_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
+            <Field label="Manual Status" custom={
+              doc.manualStatus ? <StatusPill status={doc.manualStatus} /> : <span className="text-xs" style={{ color: "#B0B0B5" }}>None</span>
+            } />
             <Field label="Schedule Status" custom={<StatusPill status={doc.status} />} />
           </div>
           <div className="rounded-lg border p-3" style={{ borderColor: LINE, background: "#FBFAF7" }}>
@@ -1748,6 +1785,9 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
           <ActionBtn label="No Response" onClick={() => submitAction("No Response")} tint={NO_RESPONSE} />
           <ActionBtn label="Won" onClick={() => submitAction("Won")} tint={GREEN} />
           <ActionBtn label="Lost" onClick={() => submitAction("Lost")} tint={GRAY} />
+          {doc.manualStatus && (
+            <ActionBtn label="Clear Status" onClick={() => setStatus("")} tint={RED} />
+          )} 
         </div>
         {customerResponseOpen && (
           <div className="fixed inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(18,23,43,0.45)" }}>

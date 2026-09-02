@@ -1,6 +1,9 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
+import { getAuth, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import { browserLocalPersistence, onAuthStateChanged, setPersistence, signInWithEmailAndPassword, signOut, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import { auth, FIREBASE_LOGIN_EMAIL } from "./firebase";
+import { agentStore, customerStore, phoneStore, quotationStore, templateStore } from "./firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyB3wz0Ec6iAiPlHUbrSSTdWk0bjSbYhDMk",
@@ -16,3 +19,4 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const FIREBASE_LOGIN_EMAIL = "ams@quotation-app.local";
+export { EmailAuthProvider, reauthenticateWithCredential };

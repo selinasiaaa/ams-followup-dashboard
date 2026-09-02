@@ -92,7 +92,7 @@ const quotationFields = (record = {}) => {
     output.manualStatus = normalizeManualStatus(record.manualStatus);
   }
 
-  return Object.fromEntries(Object.entries(output).filter(([, value]) => value !== undefined && value !== null && !(typeof value === "string" && value === "")));
+  return Object.fromEntries(Object.entries(output).filter(([, value]) => value !== undefined));
 };
 
 const agentFields = (record) => ({ name: record.name || "", active: Boolean(record.active) });
