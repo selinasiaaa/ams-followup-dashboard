@@ -55,7 +55,7 @@ const STATUS_STYLE = {
   "Upcoming": { fg: BLUE, bg: BLUE_SOFT, icon: CalendarDays },
   "Completed Today": { fg: GREEN, bg: GREEN_SOFT, icon: CheckCircle2 },
   "Follow Up Later": { fg: VIOLET, bg: VIOLET_SOFT, icon: History },
-  "Won": { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
+  "Success": { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
   "Lost": { fg: GRAY, bg: GRAY_SOFT, icon: TrendingDown },
   "No Response": { fg: NO_RESPONSE, bg: NO_RESPONSE_SOFT, icon: CircleSlash },
 };
@@ -66,11 +66,11 @@ const ACTION_STYLE = {
   "No Response": { fg: NO_RESPONSE, bg: NO_RESPONSE_SOFT, icon: CircleSlash },
   Completed: { fg: GREEN, bg: GREEN_SOFT, icon: CheckCircle2 },
   "Customer Responded": { fg: TEAL, bg: TEAL_SOFT, icon: MessageSquare },
-  Won: { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
+  Success: { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
   Lost: { fg: GRAY, bg: GRAY_SOFT, icon: TrendingDown },
 };
 
-const MANUAL_QUOTATION_STATUSES = ["No Response", "Follow Up Later", "Won", "Lost"];
+const MANUAL_QUOTATION_STATUSES = ["No Response", "Follow Up Later", "Success", "Lost"];
 const SYSTEM_QUOTATION_STATUSES = ["Due Today", "Overdue", "Upcoming", "Completed Today"];
 const MAX_HISTORY_EVENTS = 50;
 const DEFAULT_APP_NAME = "AMS-FOLLOWUP";
@@ -681,7 +681,7 @@ function Console({ appName, setAppName, onSignOut }) {
     const lastAction = (doc.history || []).slice(-1)[0]?.label || manualStatus || "—";
 
     let derivedStatus = "Upcoming";
-    if (manualStatus === "Won" || manualStatus === "Lost") {
+    if (manualStatus === "Success" || manualStatus === "Lost") {
       derivedStatus = manualStatus;
     } else if (manualStatus === "No Response" || manualStatus === "Follow Up Later") {
       derivedStatus = manualStatus;
@@ -771,7 +771,7 @@ function Console({ appName, setAppName, onSignOut }) {
       if (act === "Completed") note = "Marked as completed by " + (d.staff || d.assignedAgent || "team");
       if (act === "Customer Responded") note = params?.customerRemark || params?.message || "Customer responded.";
       if (act === "Rescheduled") note = `Follow-up rescheduled to ${fmtDate(params?.rescheduleDate)}.`;
-      if (act === "Won") note = "Deal marked as Won.";
+      if (act === "Success") note = "Deal marked as Success.";
       if (act === "Lost") note = "Deal marked as Lost.";
       if (act === "No Response") note = "No response from customer.";
       if (act === "Follow Up Later") note = params?.customerRemark || "Follow up later requested by customer.";
@@ -784,7 +784,7 @@ function Console({ appName, setAppName, onSignOut }) {
         customerResponse: act === "Customer Responded" || act === "Follow Up Later",
       };
 
-      const isTerminal = ["Won", "Lost"].includes(act);
+      const isTerminal = ["Success", "Lost"].includes(act);
       const updated = {
         ...d,
         assignedAgent: params?.agentName || d.assignedAgent || d.staff || "",
@@ -801,7 +801,7 @@ function Console({ appName, setAppName, onSignOut }) {
 
       if (act === "Completed") updated.lastFollowupDate = ymd(TODAY);
       if (act === "No Response") updated.manualStatus = "No Response";
-      if (act === "Won") updated.manualStatus = "Won";
+      if (act === "Success") updated.manualStatus = "Success";
       if (act === "Lost") updated.manualStatus = "Lost";
       return updated;
     };
@@ -819,23 +819,6 @@ function Console({ appName, setAppName, onSignOut }) {
         await quotationStore.update(updated.id, updated);
         current = updated;
       }
-
-      const refreshed = await quotationStore.list();
-      const mapped = refreshed.map((record) => ({
-        ...record,
-        id: record.id || uid("Q-"),
-        date: record.date || record.docDate || "",
-        company: record.company || record.companyName || "",
-        contactName: record.contactName || record.personInCharge || "",
-        phone: record.phone || "",
-        amount: record.amount ?? record.totalAmount ?? 0,
-        completedStages: record.completedStages ?? record.followupStage ?? 0,
-        assignedAgent: record.assignedAgent || record.agent || "",
-        manualStatus: normalizeManualStatus(record.manualStatus),
-        rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
-        history: trimHistoryEvents(record.history, MAX_HISTORY_EVENTS),
-      }));
-      setQuotations(dedupeQuotationsByDocNo(mapped));
 
       setActiveFollowupId(current.id);
       setPage("followups");
@@ -1184,10 +1167,10 @@ function Badge({ icon: Icon, label, value, fg, bg }) {
 
 /* ------------------------------ Dashboard ------------------------------ */
 function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onOpenDetail, totalRecords, onGoImport }) {
-  const totalActive = allQuotations.filter((q) => !["Won", "Lost"].includes(q.status)).length;
+  const totalActive = allQuotations.filter((q) => !["Success", "Lost"].includes(q.status)).length;
   const accountQ = allQuotations.filter((q) => q.category === "Account").length;
   const payrollQ = allQuotations.filter((q) => q.category === "Payroll").length;
-  const won = allQuotations.filter((d) => d.status === "Won").length;
+  const success = allQuotations.filter((d) => d.status === "Success").length;
   const lost = allQuotations.filter((d) => d.status === "Lost").length;
 
   return (
@@ -1211,7 +1194,7 @@ function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onO
         <StatCard label="Follow Up Later" value={counts.followUpLater} tint={VIOLET} />
         <StatCard label="Account Quotations" value={accountQ} />
         <StatCard label="Payroll Quotations" value={payrollQ} />
-        <StatCard label="Won · Lost" value={`${won} · ${lost}`} tint={GREEN} />
+        <StatCard label="Success · Lost" value={`${success} · ${lost}`} tint={GREEN} />
       </div>
 
       <div className="rounded-xl border bg-white" style={{ borderColor: LINE }}>
@@ -1328,7 +1311,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
     if (sortBy === "Company Name") return String(a.company || "").localeCompare(String(b.company || ""), undefined, { sensitivity: "base" });
     return String(a.docNo || "").localeCompare(String(b.docNo || ""), undefined, { numeric: true, sensitivity: "base" });
   });
-  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Won", "Lost", "No Response"];
+  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Success", "Lost", "No Response"];
   const isDirty = JSON.stringify(draft) !== JSON.stringify(applied);
   const isFilteredAtAll = Object.entries(applied).some(([k, v]) => v !== EMPTY_FILTERS[k]);
 
@@ -1495,13 +1478,13 @@ function CustomersPage({ allDocs, customers, onDeleteCustomer, onBulkDeleteCusto
                   <th className="px-3 py-2.5 font-medium">Phone</th>
                   <th className="px-3 py-2.5 font-medium">Email</th>
                   <th className="px-3 py-2.5 font-medium">Open Docs</th>
-                  <th className="px-3 py-2.5 font-medium">Won</th>
+                  <th className="px-3 py-2.5 font-medium">Success</th>
                 </tr>
               </thead>
               <tbody>
                 {docCustomers.map((c, i) => {
-                  const open = c.docs.filter((d) => !["Won", "Lost"].includes(d.status)).length;
-                  const won = c.docs.filter((d) => d.status === "Won").length;
+                  const open = c.docs.filter((d) => !["Success", "Lost"].includes(d.status)).length;
+                  const success = c.docs.filter((d) => d.status === "Success").length;
                   return (
                     <tr key={i} className="border-t" style={{ borderColor: LINE }}>
                       <td className="px-5 py-3 font-medium" style={{ color: INK }}>{c.name}</td>
@@ -1511,7 +1494,7 @@ function CustomersPage({ allDocs, customers, onDeleteCustomer, onBulkDeleteCusto
                       <td className="px-3 py-3">
                         <button onClick={() => onOpenCustomerDocs(c.company, c.name)} className="text-xs font-medium underline decoration-dotted" style={{ color: TEAL }}>{open} open</button>
                       </td>
-                      <td className="px-3 py-3 text-xs" style={{ color: GREEN }}>{won}</td>
+                      <td className="px-3 py-3 text-xs" style={{ color: GREEN }}>{success}</td>
                     </tr>
                   );
                 })}
@@ -1652,7 +1635,7 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
           <ActionBtn label="Reschedule" onClick={() => setReschedulingOpen((v) => !v)} tint={BLUE} />
           <ActionBtn label="Follow Up Later" onClick={() => submitAction("Follow Up Later")} tint={VIOLET} />
           <ActionBtn label="No Response" onClick={() => submitAction("No Response")} tint={NO_RESPONSE} />
-          <ActionBtn label="Won" onClick={() => submitAction("Won")} tint={GREEN} />
+          <ActionBtn label="Success" onClick={() => submitAction("Success")} tint={GREEN} />
           <ActionBtn label="Lost" onClick={() => submitAction("Lost")} tint={GRAY} />
           {doc.manualStatus && (
             <ActionBtn label="Clear Status" onClick={() => setStatus("")} tint={RED} />
@@ -1672,7 +1655,7 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
                   <button onClick={() => confirmCustomerResponse("No Response")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: NO_RESPONSE_SOFT, color: NO_RESPONSE, borderColor: NO_RESPONSE }}>No Response</button>
                   <button onClick={() => confirmCustomerResponse("Follow Up Later")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: VIOLET_SOFT, color: VIOLET, borderColor: VIOLET }}>Follow Up Later</button>
                   <button onClick={() => { setRemarkPendingReschedule(true); setCustomerResponseOpen(false); setReschedulingOpen(true); }} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: BLUE_SOFT, color: BLUE, borderColor: BLUE }}>Reschedule</button>
-                  <button onClick={() => confirmCustomerResponse("Won")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GREEN_SOFT, color: GREEN, borderColor: GREEN }}>Won</button>
+                    <button onClick={() => confirmCustomerResponse("Success")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GREEN_SOFT, color: GREEN, borderColor: GREEN }}>Success</button>
                   <button onClick={() => confirmCustomerResponse("Lost")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GRAY_SOFT, color: GRAY, borderColor: GRAY }}>Lost</button>
                 </div>
               </div>
@@ -1764,7 +1747,7 @@ function DetailDrawer({ doc, onClose, onOpenFollowup, onUpdateCategory }) {
           <section>
             <div className="flex items-center justify-between mb-2">
               <SectionTitle noMargin>Follow-up Timeline</SectionTitle>
-              {!["Won", "Lost"].includes(doc.status) && <button onClick={() => onOpenFollowup(doc)} className="text-xs font-medium px-3 py-1.5 rounded-lg" style={{ background: INK, color: "white" }}>Follow Up</button>}
+              {!["Success", "Lost"].includes(doc.status) && <button onClick={() => onOpenFollowup(doc)} className="text-xs font-medium px-3 py-1.5 rounded-lg" style={{ background: INK, color: "white" }}>Follow Up</button>}
             </div>
             <Timeline events={doc.history} />
           </section>
@@ -2355,10 +2338,10 @@ function MiniStat({ label, value, tint }) {
 
 /* ------------------------------ Reports page ------------------------------ */
 function ReportsPage({ allDocs }) {
-  const statuses = ["Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Won", "Lost"];
+  const statuses = ["Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Success", "Lost"];
   const byStatus = statuses.map((s) => ({ name: s, value: allDocs.filter((d) => d.status === s).length }));
   const byCategory = ["Account", "Payroll"].map((c) => ({ name: c, value: allDocs.filter((d) => (d.category || "") === c).length }));
-  const wonLost = [{ name: "Won", value: allDocs.filter((d) => d.status === "Won").length }, { name: "Lost", value: allDocs.filter((d) => d.status === "Lost").length }];
+  const successLost = [{ name: "Success", value: allDocs.filter((d) => d.status === "Success").length }, { name: "Lost", value: allDocs.filter((d) => d.status === "Lost").length }];
   const weeks = [4, 3, 2, 1, 0].map((w) => {
     const label = w === 0 ? "This week" : `${w}w ago`;
     const count = allDocs.reduce((sum, d) => sum + (d.history || []).filter((h) => {
@@ -2390,9 +2373,9 @@ function ReportsPage({ allDocs }) {
             <BarChart data={byCategory}><CartesianGrid strokeDasharray="3 3" stroke={LINE} vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><Tooltip /><Bar dataKey="value" fill={TEAL} radius={[6, 6, 0, 0]} barSize={60} /></BarChart>
           </ResponsiveContainer>
         </ChartCard>
-        <ChartCard title="Won vs Lost">
+        <ChartCard title="Success vs Lost">
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={wonLost}><CartesianGrid strokeDasharray="3 3" stroke={LINE} vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><Tooltip /><Bar dataKey="value" radius={[6, 6, 0, 0]} barSize={60}><Cell fill={GREEN} /><Cell fill={GRAY} /></Bar></BarChart>
+            <BarChart data={successLost}><CartesianGrid strokeDasharray="3 3" stroke={LINE} vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} /><Tooltip /><Bar dataKey="value" radius={[6, 6, 0, 0]} barSize={60}><Cell fill={GREEN} /><Cell fill={GRAY} /></Bar></BarChart>
           </ResponsiveContainer>
         </ChartCard>
         <ChartCard title="Follow-ups Completed per Week">

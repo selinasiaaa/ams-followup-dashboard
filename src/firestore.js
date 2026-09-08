@@ -37,7 +37,7 @@ const reportError = (operation, error) => {
 
 const run = (operation, callback) => callback().catch((error) => reportError(operation, error));
 
-const MANUAL_STATUS_VALUES = ["No Response", "Follow Up Later", "Won", "Lost"];
+const MANUAL_STATUS_VALUES = ["No Response", "Follow Up Later", "Success", "Lost"];
 
 const normalizeManualStatus = (value) => {
   const next = String(value ?? "").trim();
