@@ -144,6 +144,31 @@ function trimHistoryEvents(events, maxEvents = MAX_HISTORY_EVENTS) {
   return filtered.slice(-maxEvents);
 }
 
+/* ------------------------------ Dedup guard ------------------------------ */
+// Firestore can end up holding two documents for the same quotation (e.g. a
+// retried create, or a leftover from an earlier import bug). Rather than
+// trusting Firestore's raw list 1:1, collapse duplicates by docNo (falling
+// back to id when docNo is blank) every time we map Firestore records into
+// local state, keeping whichever record has the longer follow-up history
+// (the one actually being worked on).
+function dedupeQuotationsByDocNo(records) {
+  const map = new Map();
+  records.forEach((record) => {
+    const key = String(record.docNo || record.id).trim().toLowerCase();
+    const existing = map.get(key);
+    if (!existing) { map.set(key, record); return; }
+    const existingScore = (existing.history || []).length;
+    const newScore = (record.history || []).length;
+    if (newScore > existingScore) {
+      console.warn(`[AMS-FOLLOWUP] Duplicate quotation for docNo "${record.docNo}" — keeping ${record.id}, dropping ${existing.id}`);
+      map.set(key, record);
+    } else {
+      console.warn(`[AMS-FOLLOWUP] Duplicate quotation for docNo "${record.docNo}" — keeping ${existing.id}, dropping ${record.id}`);
+    }
+  });
+  return Array.from(map.values());
+}
+
 /* ------------------------------ Holidays & schedules ------------------------------ */
 // Malaysia public holidays for 2026 — national holidays (state: "All") plus the main
 // state-specific observances (royal birthdays, Thaipusam, Federal Territory Day, Gawai,
@@ -585,7 +610,7 @@ function Console({ appName, setAppName, onSignOut }) {
           quotationStore.list(), agentStore.list(), phoneStore.list(), templateStore.list(), customerStore.list(),
         ]);
         if (!cancelled) {
-          if (storedQuotations.length) setQuotations(storedQuotations.map((record) => ({
+          if (storedQuotations.length) setQuotations(dedupeQuotationsByDocNo(storedQuotations.map((record) => ({
             ...record,
             date: record.date || record.docDate || "",
             company: record.company || record.companyName || "",
@@ -598,7 +623,7 @@ function Console({ appName, setAppName, onSignOut }) {
             manualStatus: normalizeManualStatus(record.manualStatus),
             rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
             history: trimHistoryEvents(record.history, MAX_HISTORY_EVENTS),
-          })));
+          }))));
           if (storedAgents.length) {
             const userAgents = storedAgents.filter((record) => !((record.id || "").match(/^agent-[1-4]$/) && LEGACY_SAMPLE_AGENTS.has(record.name)));
             setAgents(userAgents.map((record) => ({ ...record, name: record.name || record.agentName || "", active: Boolean(record.active ?? record.activeStatus) })));
@@ -842,7 +867,7 @@ function Console({ appName, setAppName, onSignOut }) {
         rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
         history: trimHistoryEvents(record.history, MAX_HISTORY_EVENTS),
       }));
-      setQuotations(mapped);
+      setQuotations(dedupeQuotationsByDocNo(mapped));
 
       setActiveFollowupId(current.id);
       setPage("followups");
