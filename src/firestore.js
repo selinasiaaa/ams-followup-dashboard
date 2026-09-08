@@ -13,7 +13,6 @@ export const COLLECTIONS = {
   customers: "customers",
   agents: "agents",
   phones: "sending phone",
-  templates: "messageTemplates",
 };
 
 const readCollection = async (name) => {
@@ -98,16 +97,6 @@ const quotationFields = (record = {}) => {
 const agentFields = (record) => ({ name: record.name || "", active: Boolean(record.active) });
 const phoneFields = (record) => ({ phoneName: record.name || record.phoneName || "", phoneNumber: record.number || record.phoneNumber || "", active: Boolean(record.active ?? true) });
 const customerFields = (record) => ({ companyName: record.company || record.companyName || "", personInCharge: record.contactName || record.personInCharge || "", phone: record.phone || "", email: record.email || "", category: record.category || "" });
-const templateFields = (record) => ({
-  title: record.title || "",
-  documentType: record.docType || record.documentType || "Quotation",
-  category: record.category || "",
-  followUpStage: record.stageTag || record.followUpStage || "",
-  language: record.language || "",
-  messageType: record.type || record.messageType || "",
-  message: record.message || "",
-});
-
 export const quotationStore = {
   list: () => run("list quotations", () => readCollection(COLLECTIONS.quotations)),
   saveAll: (records) => run("save quotations", () => writeCollection(COLLECTIONS.quotations, records, quotationFields)),
@@ -143,10 +132,3 @@ export const phoneStore = {
   remove: (id) => run("delete sending phone", () => deleteDoc(doc(db, COLLECTIONS.phones, id))),
 };
 
-export const templateStore = {
-  list: () => run("list message templates", () => readCollection(COLLECTIONS.templates)),
-  saveAll: (records) => run("save message templates", () => writeCollection(COLLECTIONS.templates, records, templateFields)),
-  create: (record) => run("create message template", () => setDoc(doc(db, COLLECTIONS.templates, record.id), { ...templateFields(record), createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true })),
-  update: (id, changes) => run("update message template", () => setDoc(doc(db, COLLECTIONS.templates, id), { ...templateFields(changes), updatedAt: serverTimestamp() }, { merge: true })),
-  remove: (id) => run("delete message template", () => deleteDoc(doc(db, COLLECTIONS.templates, id))),
-};

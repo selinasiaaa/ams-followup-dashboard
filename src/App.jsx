@@ -15,7 +15,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { browserLocalPersistence, onAuthStateChanged, setPersistence, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth, FIREBASE_LOGIN_EMAIL } from "./firebase";
-import { agentStore, customerStore, phoneStore, quotationStore, templateStore } from "./firestore";
+import { agentStore, customerStore, phoneStore, quotationStore } from "./firestore";
 import { EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -259,19 +259,6 @@ function seedHistory(docDateStr, completedStages, stages, holidays, docLabel, st
   }
   return events;
 }
-/* ------------------------------ Templates ------------------------------ */
-const INITIAL_TEMPLATES = [
-  { id: "t1", docType: "Quotation", category: "Account", stageCode: "day3", stageTag: "Day 3", language: "English", type: "WhatsApp", title: "Quotation — Day 3 (Account, EN)", message: "Hi {{CustomerName}}, this is {{StaffName}} from our team. Just following up on quotation {{QuotationNo}} ({{Amount}}) sent to {{CompanyName}} on {{QuotationDate}}. Happy to answer any questions — let me know how you'd like to proceed." },
-  { id: "t2", docType: "Quotation", category: "Account", stageCode: "day5", stageTag: "Day 5", language: "English", type: "WhatsApp", title: "Quotation — Day 5 (Account, EN)", message: "Hi {{CustomerName}}, checking in again on {{QuotationNo}} for {{CompanyName}}. If it's helpful, I can walk you through the scope on a quick call this week — happy to fit your schedule." },
-  { id: "t3", docType: "Quotation", category: "Account", stageCode: "day7", stageTag: "Day 7", language: "English", type: "Email", title: "Quotation — Day 7 (Account, EN)", message: "Dear {{CustomerName}}, I wanted to follow up on quotation {{QuotationNo}} sent on {{QuotationDate}} for {{Amount}}. Please let us know if you need any adjustments to the scope or pricing so we can move this forward for {{CompanyName}}." },
-  { id: "t4", docType: "Quotation", category: "Account", stageCode: "day10", stageTag: "Day 10", language: "English", type: "Email", title: "Quotation — Day 10 (Account, EN)", message: "Dear {{CustomerName}}, this is a final check-in on quotation {{QuotationNo}}. If timing isn't right, no problem at all — just let us know and we'll follow up when it suits {{CompanyName}} better." },
-  { id: "t5", docType: "Quotation", category: "Payroll", stageCode: "day3", stageTag: "Day 3", language: "English", type: "WhatsApp", title: "Quotation — Day 3 (Payroll, EN)", message: "Hi {{CustomerName}}, following up on the payroll services quotation {{QuotationNo}} sent to {{CompanyName}} on {{QuotationDate}}. Happy to clarify anything on the onboarding timeline or pricing." },
-  { id: "t6", docType: "Quotation", category: "Payroll", stageCode: "day5", stageTag: "Day 5", language: "English", type: "WhatsApp", title: "Quotation — Day 5 (Payroll, EN)", message: "Hi {{CustomerName}}, just checking in on {{QuotationNo}}. Would it help if I sent a short summary of what switching payroll providers looks like in practice for {{CompanyName}}?" },
-  { id: "t7", docType: "Quotation", category: "Payroll", stageCode: "day7", stageTag: "Day 7", language: "Bahasa Malaysia", type: "WhatsApp", title: "Quotation — Day 7 (Payroll, BM)", message: "Salam {{CustomerName}}, susulan sebutharga {{QuotationNo}} untuk {{CompanyName}} bertarikh {{QuotationDate}}. Sila maklumkan sekiranya ada sebarang pertanyaan mengenai skop atau harga." },
-  { id: "t8", docType: "Quotation", category: "Payroll", stageCode: "day10", stageTag: "Day 10", language: "English", type: "Email", title: "Quotation — Day 10 (Payroll, EN)", message: "Dear {{CustomerName}}, closing the loop on quotation {{QuotationNo}} for {{Amount}}. Let us know if {{CompanyName}} would like to proceed or needs a revised proposal." },
-];
-const renderTemplate = (message, vars) => message.replace(/\{\{(\w+)\}\}/g, (m, k) => (vars[k] !== undefined ? vars[k] : m));
-
 /* ------------------------------ Import field maps ------------------------------ */
 const QUOTATION_FIELDS = [
   { key: "date", label: "Document Date", required: true, guesses: ["date", "quotation date", "doc date", "document date"] },
@@ -563,19 +550,16 @@ function Console({ appName, setAppName, onSignOut }) {
   const [holidays, setHolidays] = useState(DEFAULT_HOLIDAYS);
   const [operatingState, setOperatingState] = useState(DEFAULT_OPERATING_STATE);
   const [schedules, setSchedules] = useState(DEFAULT_SCHEDULES);
-  const [templates, setTemplates] = useState(INITIAL_TEMPLATES);
   const [quotations, setQuotations] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [agents, setAgents] = useState(DEFAULT_AGENTS);
   const [phones, setPhones] = useState(DEFAULT_PHONES);
-  const [importHistory, setImportHistory] = useState([]);
   const [activeFollowupId, setActiveFollowupId] = useState(null);
   const [detailDoc, setDetailDoc] = useState(null);
   const [importPresetType, setImportPresetType] = useState("Quotation");
   const [deleteRequest, setDeleteRequest] = useState(null); // { message, onConfirm }
   const [toast, setToast] = useState(null);
   const [customerDrill, setCustomerDrill] = useState(null); // { company, name }
-  const [batchDrill, setBatchDrill] = useState(null); // batchId
   const [dataLoaded, setDataLoaded] = useState(false);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast((t) => (t === msg ? null : t)), 2800); };
@@ -595,19 +579,14 @@ function Console({ appName, setAppName, onSignOut }) {
           if (data.operatingState) setOperatingState(data.operatingState);
           if (data.holidays) setHolidays(data.holidays);
           if (data.schedules) setSchedules(data.schedules);
-          const hasLegacySample = data.importHistory?.some((batch) => String(batch.batchId || "").startsWith("BATCH-SEED"));
-          if (hasLegacySample) {
-            setImportHistory([]);
-          }
           if (data.customers) setCustomers(data.customers);
-          if (data.importHistory && !hasLegacySample) setImportHistory(data.importHistory);
         }
       } catch (err) {
         // Optional local storage is unavailable; Firestore remains the source of truth.
       }
       try {
-        const [storedQuotations, storedAgents, storedPhones, storedTemplates, storedCustomers] = await Promise.all([
-          quotationStore.list(), agentStore.list(), phoneStore.list(), templateStore.list(), customerStore.list(),
+        const [storedQuotations, storedAgents, storedPhones, storedCustomers] = await Promise.all([
+          quotationStore.list(), agentStore.list(), phoneStore.list(), customerStore.list(),
         ]);
         if (!cancelled) {
           if (storedQuotations.length) setQuotations(dedupeQuotationsByDocNo(storedQuotations.map((record) => ({
@@ -630,12 +609,6 @@ function Console({ appName, setAppName, onSignOut }) {
             await Promise.all(storedAgents.filter((record) => !userAgents.includes(record)).map((record) => agentStore.remove(record.id)));
           }
           if (storedPhones.length) setPhones(storedPhones.map((record) => ({ ...record, name: record.name || record.phoneName || "", number: record.number || record.phoneNumber || "", active: Boolean(record.active ?? true) })));
-          if (storedTemplates.length) setTemplates(storedTemplates.map((record) => ({
-            ...record,
-            docType: record.docType || record.documentType || "Quotation",
-            stageTag: record.stageTag || record.followUpStage || "",
-            type: record.type || record.messageType || "",
-          })));
           if (storedCustomers.length) setCustomers(storedCustomers.map((record) => ({
             ...record,
             company: record.company || record.companyName || "",
@@ -655,7 +628,7 @@ function Console({ appName, setAppName, onSignOut }) {
 
   useEffect(() => {
     if (!dataLoaded) return;
-    const payload = { appName, operatingState, holidays, schedules, customers, importHistory };
+    const payload = { appName, operatingState, holidays, schedules, customers };
     const t = setTimeout(() => {
       try {
         window.storage.set(STORAGE_KEY, JSON.stringify(payload)).catch(() => {});
@@ -664,7 +637,7 @@ function Console({ appName, setAppName, onSignOut }) {
       }
     }, 500);
     return () => clearTimeout(t);
-  }, [appName, operatingState, holidays, schedules, customers, importHistory, dataLoaded]);
+  }, [appName, operatingState, holidays, schedules, customers, dataLoaded]);
 
   function resetToSampleData() {
   requestDelete("Reset AMS-FOLLOWUP back to the original sample dataset? This clears everything imported, edited, or deleted — including data saved in Firestore — and cannot be undone.", async () => {
@@ -686,12 +659,10 @@ function Console({ appName, setAppName, onSignOut }) {
     setOperatingState(DEFAULT_OPERATING_STATE);
     setHolidays(DEFAULT_HOLIDAYS);
     setSchedules(DEFAULT_SCHEDULES);
-    setTemplates(INITIAL_TEMPLATES);
     setQuotations([]);
     setCustomers([]);
     setAgents(DEFAULT_AGENTS);
     setPhones(DEFAULT_PHONES);
-    setImportHistory([]);
     showToast("All quotation data was cleared.");
   });
 }
@@ -761,12 +732,10 @@ function Console({ appName, setAppName, onSignOut }) {
     followUpLater: allDocs.filter((d) => d.manualStatus === "Follow Up Later").length,
   };
 
-  async function applyAction(doc, docType, action, extra) {
+  async function applyAction(doc, action, extra) {
     const currentDoc = quotations.find((item) => item.id === doc.id) || doc;
     const stages = schedules.quotation;
     const stageInfo = stages[currentDoc.completedStages] || null;
-    const template = templates.find((t) => t.docType === docType && t.category === currentDoc.category && t.stageCode === stageInfo?.code) || templates.find((t) => t.docType === docType && t.stageCode === stageInfo?.code);
-
     if (action === "EditHistory") {
       const idx = extra?.index;
       const newNote = extra?.newNote;
@@ -813,7 +782,6 @@ function Console({ appName, setAppName, onSignOut }) {
         label: act === "Completed" ? `Completed: ${stageInfo ? stageInfo.label : "Follow-up"}` : (act === "Rescheduled" ? `Follow-up rescheduled to ${fmtDate(params?.rescheduleDate)}` : (stageInfo ? stageInfo.label : "Follow-up")),
         note,
         customerResponse: act === "Customer Responded" || act === "Follow Up Later",
-        template: params?.templateTitle || (template ? template.title : null),
       };
 
       const isTerminal = ["Won", "Lost"].includes(act);
@@ -920,13 +888,6 @@ function Console({ appName, setAppName, onSignOut }) {
       showToast(`${list.length} customer record${list.length !== 1 ? "s" : ""} deleted.`);
     });
   }
-  function deleteTemplate(tpl) {
-    requestDelete(`Delete template "${tpl.title}"?`, () => {
-      setTemplates((prev) => prev.filter((t) => t.id !== tpl.id));
-      templateStore.remove(tpl.id).catch((error) => console.error("[Firestore] Message template delete failed", error));
-    });
-  }
-
   // ---- PDF quotation and customer import merge logic ----
   function commitImport({ docType, fileName, rows, resolutions, agentName, phoneId }) {
     const batchId = uid("BATCH-");
@@ -999,10 +960,6 @@ function Console({ appName, setAppName, onSignOut }) {
       });
     }
 
-    setImportHistory((prev) => [
-      { id: batchId, batchId, docType, fileName, importDate, totalRows: rows.length, newRecords: newCount, updated: updatedCount, skipped: skippedCount, errors: 0 },
-      ...prev,
-    ]);
     showToast(`Import complete — ${newCount} new, ${updatedCount} updated, ${skippedCount} skipped.`);
     return { batchId, newCount, updatedCount, skippedCount };
   }
@@ -1013,12 +970,7 @@ function Console({ appName, setAppName, onSignOut }) {
     setDetailDoc((prev) => (prev && prev.id === doc.id ? { ...prev, category: newCategory } : prev));
   }
 
-  const lastImport = importHistory[0];
   const totalRecords = quotations.length;
-  const batchMeta = batchDrill ? importHistory.find((b) => b.batchId === batchDrill) : null;
-  const batchRecords = batchDrill
-    ? (batchMeta?.docType === "Customer" ? customers.filter((c) => c.importBatchId === batchDrill) : allDocs.filter((d) => d.importBatchId === batchDrill))
-    : [];
   const drillDocs = customerDrill ? allDocs.filter((d) => d.company === customerDrill.company && d.contactName === customerDrill.name) : [];
 
   return (
@@ -1037,9 +989,7 @@ function Console({ appName, setAppName, onSignOut }) {
           <NavItem icon={LayoutDashboard} label="Dashboard" active={page === "dashboard"} onClick={() => setPage("dashboard")} />
           <NavItem icon={UploadCloud} label="Import Data" active={page === "import"} onClick={() => setPage("import")} />
           <NavItem icon={Clock} label="Follow-ups" active={page === "followups"} onClick={() => setPage("followups")} count={counts.dueToday + counts.overdue} />
-          <NavItem icon={MessageSquare} label="Message Templates" active={page === "templates"} onClick={() => setPage("templates")} />
           <NavItem icon={CalendarDays} label="Holiday Calendar" active={page === "holidays"} onClick={() => setPage("holidays")} />
-          <NavItem icon={History} label="Import History" active={page === "importhistory"} onClick={() => setPage("importhistory")} />
           <NavItem icon={BarChart3} label="Reports" active={page === "reports"} onClick={() => setPage("reports")} />
           <NavItem icon={SettingsIcon} label="Settings" active={page === "settings"} onClick={() => setPage("settings")} />
         </nav>
@@ -1062,7 +1012,7 @@ function Console({ appName, setAppName, onSignOut }) {
         <div className="px-8 py-6">
           {page === "dashboard" && (
             <Dashboard counts={counts} allQuotations={allQuotations} todaysFollowups={todaysFollowups}
-              onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} lastImport={lastImport} totalRecords={totalRecords}
+              onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} totalRecords={totalRecords}
               onGoImport={() => setPage("import")} />
           )}
           {page === "import" && (
@@ -1070,25 +1020,17 @@ function Console({ appName, setAppName, onSignOut }) {
               existingQuotations={quotations} agents={agents} phones={phones} onCommit={commitImport} />
           )}
           {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
-          {page === "templates" && <TemplatesPage templates={templates} setTemplates={setTemplates} onDeleteTemplate={deleteTemplate} />}
           {page === "holidays" && <HolidaysPage holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} />}
-          {page === "importhistory" && <ImportHistoryPage importHistory={importHistory} appName={appName} onOpenBatch={setBatchDrill} />}
           {page === "reports" && <ReportsPage allDocs={allDocs} />}
           {page === "settings" && <SettingsPage schedules={schedules} setSchedules={setSchedules} appName={appName} setAppName={setAppName} agents={agents} setAgents={setAgents} phones={phones} setPhones={setPhones} onResetData={resetToSampleData} onSaved={showToast} />}
         </div>
       </main>
 
-      {activeFollowup && <FollowupPanel doc={activeFollowup} templates={templates} agents={agents} phones={phones} onClose={() => setActiveFollowupId(null)} onAction={(action, extra) => applyAction(activeFollowup, activeFollowup.docType, action, extra)} />}
+      {activeFollowup && <FollowupPanel doc={activeFollowup} agents={agents} phones={phones} onClose={() => setActiveFollowupId(null)} onAction={(action, extra) => applyAction(activeFollowup, action, extra)} />}
       {detailDoc && <DetailDrawer doc={detailDoc} onClose={() => setDetailDoc(null)} onOpenFollowup={(d) => { setDetailDoc(null); setActiveFollowupId(d.id); }} onUpdateCategory={(cat) => updateCategory(detailDoc, detailDoc.docType, cat)} />}
       {customerDrill && (
         <CustomerDocsDrawer customer={customerDrill} docs={drillDocs} onClose={() => setCustomerDrill(null)}
           onOpenDetail={(d) => { setCustomerDrill(null); setDetailDoc(d); }} />
-      )}
-      {batchDrill && (
-        <BatchDrawer batchId={batchDrill} batch={batchMeta} records={batchRecords}
-          recordType={batchMeta?.docType === "Customer" ? "customer" : "document"}
-          onClose={() => setBatchDrill(null)} onOpenDetail={(d) => { setBatchDrill(null); setDetailDoc(d); }}
-          onOpenCustomer={(c) => { setBatchDrill(null); setCustomerDrill({ company: c.company, name: c.contactName }); }} />
       )}
       {deleteRequest && <DeleteConfirmModal request={deleteRequest} onCancel={cancelDelete} onConfirm={confirmDelete} />}
       <Toast toast={toast} />
@@ -1241,7 +1183,7 @@ function Badge({ icon: Icon, label, value, fg, bg }) {
 }
 
 /* ------------------------------ Dashboard ------------------------------ */
-function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onOpenDetail, lastImport, totalRecords, onGoImport }) {
+function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onOpenDetail, totalRecords, onGoImport }) {
   const totalActive = allQuotations.filter((q) => !["Won", "Lost"].includes(q.status)).length;
   const accountQ = allQuotations.filter((q) => q.category === "Account").length;
   const payrollQ = allQuotations.filter((q) => q.category === "Payroll").length;
@@ -1250,46 +1192,16 @@ function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onO
 
   return (
     <div className="flex flex-col gap-6">
-      {lastImport ? (
-        <div className="rounded-xl border bg-white px-5 py-4 flex items-center justify-between flex-wrap gap-3" style={{ borderColor: LINE }}>
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: TEAL_SOFT }}><FileText size={18} style={{ color: TEAL }} /></div>
-            <div>
-              <div className="text-[11px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}>Last Data Import</div>
-              <div className="text-sm font-semibold" style={{ color: INK }}>{fmtDateTime(new Date(lastImport.importDate))}</div>
-            </div>
-            <div className="w-px h-8" style={{ background: LINE }} />
-            <div>
-              <div className="text-[11px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}>Source</div>
-              <div className="text-sm font-medium" style={{ color: INK }}>PDF Quotation</div>
-            </div>
-            <div className="w-px h-8" style={{ background: LINE }} />
-            <div>
-              <div className="text-[11px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}>Records Imported</div>
-              <div className="text-sm font-medium" style={{ color: INK }}>{lastImport.newRecords + lastImport.updated}<span className="text-xs font-normal" style={{ color: "#9A9AA0" }}> of {lastImport.totalRows} rows · {lastImport.docType}</span></div>
-            </div>
-            <div className="w-px h-8" style={{ background: LINE }} />
-            <div>
-              <div className="text-[11px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}>Records on File</div>
-              <div className="text-sm font-medium" style={{ color: INK }}>{totalRecords}</div>
-            </div>
+      <div className="rounded-xl border-2 border-dashed p-6 flex items-center justify-between" style={{ borderColor: LINE }}>
+        <div className="flex items-center gap-3">
+          <Info size={18} style={{ color: "#9A9AA0" }} />
+          <div>
+            <div className="text-sm font-semibold" style={{ color: INK }}>Records on file: {totalRecords}</div>
+            <div className="text-xs" style={{ color: "#9A9AA0" }}>Import a quotation PDF to build your follow-up list.</div>
           </div>
-          <button onClick={onGoImport} className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 rounded-lg" style={{ background: INK, color: "white" }}>
-            <UploadCloud size={14} /> Import Latest PDF
-          </button>
         </div>
-      ) : (
-        <div className="rounded-xl border-2 border-dashed p-6 flex items-center justify-between" style={{ borderColor: LINE }}>
-          <div className="flex items-center gap-3">
-            <Info size={18} style={{ color: "#9A9AA0" }} />
-            <div>
-              <div className="text-sm font-semibold" style={{ color: INK }}>No data imported yet</div>
-              <div className="text-xs" style={{ color: "#9A9AA0" }}>Import a quotation PDF to build your follow-up list.</div>
-            </div>
-          </div>
-          <button onClick={onGoImport} className="text-xs font-medium px-3.5 py-2 rounded-lg" style={{ background: INK, color: "white" }}>Import PDF</button>
-        </div>
-      )}
+        <button onClick={onGoImport} className="text-xs font-medium px-3.5 py-2 rounded-lg" style={{ background: INK, color: "white" }}>Import PDF</button>
+      </div>
 
       <div className="grid grid-cols-4 lg:grid-cols-8 gap-3">
         <StatCard label="Active Quotations" value={totalActive} />
@@ -1639,68 +1551,11 @@ function CustomerDocsDrawer({ customer, docs, onClose, onOpenDetail }) {
   );
 }
 
-/* ------------------------------ Import batch drill-down drawer ------------------------------ */
-function BatchDrawer({ batch, records, recordType, onClose, onOpenDetail, onOpenCustomer }) {
-  return (
-    <div className="fixed inset-0 z-25 flex items-center justify-end" style={{ background: "rgba(18,23,43,0.4)" }}>
-      <div className="h-full w-full max-w-xl bg-white shadow-2xl flex flex-col">
-        <div className="flex items-start justify-between px-6 py-5 border-b" style={{ borderColor: LINE }}>
-          <div>
-            <div className="text-xs font-medium flex items-center gap-1.5" style={{ color: "#9A9AA0" }}><FileText size={13} style={{ color: TEAL }} /> Import Batch</div>
-            <h3 className="text-lg font-semibold" style={{ color: INK }}>{batch ? batch.fileName : "Batch"}</h3>
-            {batch && <div className="text-xs" style={{ color: "#9A9AA0" }}>{fmtDateTime(new Date(batch.importDate))} · {batch.docType}</div>}
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[#F2F1EC]"><X size={18} /></button>
-        </div>
-        {batch && (
-          <div className="px-6 py-4 border-b grid grid-cols-4 gap-3" style={{ borderColor: LINE }}>
-            <MiniStat label="New" value={batch.newRecords} tint={GREEN} />
-            <MiniStat label="Updated" value={batch.updated} tint={BLUE} />
-            <MiniStat label="Skipped" value={batch.skipped} tint={GRAY} />
-            <MiniStat label="Errors" value={batch.errors} tint={RED} />
-          </div>
-        )}
-        <div className="px-6 py-5 overflow-y-auto flex-1 flex flex-col gap-3">
-          <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#9A9AA0" }}>{records.length} record{records.length !== 1 ? "s" : ""} currently on file from this batch</div>
-          {records.length === 0 ? (
-            <div className="text-sm text-center py-10" style={{ color: "#9A9AA0" }}>No records from this batch remain (they may have been updated by a later import or deleted).</div>
-          ) : recordType === "customer" ? (
-            records.map((c) => (
-              <button key={c.id} onClick={() => onOpenCustomer(c)} className="text-left rounded-lg border p-3 flex items-center justify-between hover:bg-[#FBFAF7]" style={{ borderColor: LINE }}>
-                <div>
-                  <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: INK }}><Building2 size={12} />{c.company}</div>
-                  <div className="text-xs" style={{ color: "#9A9AA0" }}>{c.contactName || "—"} · {c.phone || "—"} · {c.email || "—"}</div>
-                </div>
-                {c.category && <Tag>{c.category}</Tag>}
-              </button>
-            ))
-          ) : (
-            records.map((d) => (
-              <button key={d.docType + d.id} onClick={() => onOpenDetail(d)} className="text-left rounded-lg border p-3 flex items-center justify-between hover:bg-[#FBFAF7]" style={{ borderColor: LINE }}>
-                <div>
-                  <div className="text-sm font-medium" style={{ color: INK }}>{d.docNo} <span className="text-xs font-normal" style={{ color: "#9A9AA0" }}>· {d.company}</span></div>
-                  <div className="text-xs" style={{ color: "#9A9AA0" }}>{fmtDate(d.date)} · {money(d.amount)}</div>
-                </div>
-                <StatusPill status={d.status} />
-              </button>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ------------------------------ Follow-up Action Panel ------------------------------ */
-function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
+function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
   const stageInfo = doc.currentStage;
-  const template = templates.find((t) => t.docType === doc.docType && t.category === doc.category && t.stageCode === stageInfo?.code) || templates.find((t) => t.docType === doc.docType && t.stageCode === stageInfo?.code);
-  const vars = { CustomerName: (doc.customer?.name || "").split(" ")[0], CompanyName: doc.customer?.company, QuotationNo: doc.docNo, QuotationDate: fmtDate(doc.date), Amount: money(doc.amount), StaffName: (doc.staff || "").split(" ")[0] };
-  const [selectedTemplateId, setSelectedTemplateId] = useState(template?.id || "");
-  const [message, setMessage] = useState(template ? renderTemplate(template.message, vars) : "");
   const [agentName, setAgentName] = useState(doc.assignedAgent || doc.staff || agents.find((agent) => agent.active)?.name || "");
   const [phoneId, setPhoneId] = useState(doc.sendingPhoneId || "");
-  const [copied, setCopied] = useState(false);
   const [reschedulingOpen, setReschedulingOpen] = useState(false);
   const [rescheduleDate, setRescheduleDate] = useState(doc.nextDate ? ymd(doc.nextDate) : "");
   const [customerResponseOpen, setCustomerResponseOpen] = useState(false);
@@ -1709,24 +1564,23 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
   const [editingHistoryOpen, setEditingHistoryOpen] = useState(false);
   const [editingHistoryIndex, setEditingHistoryIndex] = useState(null);
   const [editingHistoryNote, setEditingHistoryNote] = useState("");
-  const copy = () => { navigator.clipboard?.writeText(message); setCopied(true); setTimeout(() => setCopied(false), 1500); };
-  const submitAction = (action) => onAction(action, { agentName, phoneId, message, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title });
+  const submitAction = (action) => onAction(action, { agentName, phoneId });
   const confirmReschedule = () => {
     if (!rescheduleDate) return;
     if (remarkPendingReschedule) {
       // If remark was entered and user chose reschedule from remark modal, apply Customer Responded then Rescheduled in one sequence
-      onAction("Customer Responded", { agentName, phoneId, customerRemark, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title, nextAction: "Rescheduled", nextParams: { rescheduleDate, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title } });
+      onAction("Customer Responded", { agentName, phoneId, customerRemark, nextAction: "Rescheduled", nextParams: { rescheduleDate } });
       setRemarkPendingReschedule(false);
       setCustomerRemark("");
       setReschedulingOpen(false);
       return;
     }
-    onAction("Rescheduled", { rescheduleDate, agentName, phoneId, message, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title });
+    onAction("Rescheduled", { rescheduleDate, agentName, phoneId });
     setReschedulingOpen(false);
   };
 
   const confirmCustomerResponse = (nextAction, nextParams) => {
-    const payload = { agentName, phoneId, customerRemark, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title };
+    const payload = { agentName, phoneId, customerRemark };
     if (nextAction) {
       payload.nextAction = nextAction;
       payload.nextParams = nextParams || {};
@@ -1735,7 +1589,7 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
     setCustomerResponseOpen(false);
     setCustomerRemark("");
   };
-  const setStatus = (s) => onAction("SetStatus", { status: s, agentName, phoneId, message, templateTitle: templates.find((t)=>t.id===selectedTemplateId)?.title });
+  const setStatus = (s) => onAction("SetStatus", { status: s, agentName, phoneId });
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-end" style={{ background: "rgba(18,23,43,0.45)" }}>
       <div className="h-full w-full max-w-md bg-white flex flex-col shadow-2xl">
@@ -1762,23 +1616,6 @@ function FollowupPanel({ doc, templates, agents, phones, onClose, onAction }) {
             } />
             <Field label="Schedule Status" custom={<StatusPill status={doc.status} />} />
           </div>
-          <div className="rounded-lg border p-3" style={{ borderColor: LINE, background: "#FBFAF7" }}>
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-semibold" style={{ color: INK }}>Recommended message</span>
-                <select value={selectedTemplateId} onChange={(e) => { const id = e.target.value; setSelectedTemplateId(id); const tpl = templates.find((t)=>t.id===id); setMessage(tpl ? renderTemplate(tpl.message, vars) : ""); }} className="text-xs rounded-md border px-2 py-1 bg-white" style={{ borderColor: LINE }}>
-                  <option value="">(none)</option>
-                  {templates.filter((t) => t.docType === doc.docType && (t.stageCode === stageInfo?.code || t.category === doc.category)).map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
-                </select>
-              </div>
-              {template && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: TEAL_SOFT, color: TEAL }}>{template.type} · {template.language}</span>}
-            </div>
-            <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={6} className="w-full text-sm rounded-md border p-2.5 outline-none resize-none" style={{ borderColor: LINE, color: "#3A3B41" }} />
-            <button onClick={copy} className="mt-2 w-full flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-lg" style={{ background: copied ? GREEN_SOFT : TEAL_SOFT, color: copied ? GREEN : TEAL }}>
-              <Copy size={13} /> {copied ? "Copied to clipboard" : "Copy Message"}
-            </button>
-          </div>
-
           {reschedulingOpen && (
             <div className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: BLUE, background: BLUE_SOFT }}>
               <div className="text-xs font-semibold" style={{ color: BLUE }}>Pick a new follow-up date</div>
@@ -1957,112 +1794,6 @@ function Timeline({ events, onEditEvent }) {
       ))}
     </div>
   );
-}
-
-/* ------------------------------ Templates page ------------------------------ */
-function TemplatesPage({ templates, setTemplates }) {
-  const [search, setSearch] = useState("");
-  const [docType, setDocType] = useState("All");
-  const [category, setCategory] = useState("All");
-  const [editing, setEditing] = useState(null);
-  const [previewId, setPreviewId] = useState(null);
-  const filtered = templates.filter((t) => {
-    if (docType !== "All" && t.docType !== docType) return false;
-    if (category !== "All" && t.category !== category) return false;
-    if (search && !`${t.title} ${t.message}`.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
-  const save = (tpl) => {
-    const exists = templates.some((p) => p.id === tpl.id);
-    setTemplates((prev) => (exists ? prev.map((p) => (p.id === tpl.id ? tpl : p)) : [...prev, tpl]));
-    const operation = exists ? templateStore.update(tpl.id, tpl) : templateStore.create(tpl);
-    operation.catch((error) => console.error("[Firestore] Message template save failed", error));
-    setEditing(null);
-  };
-  const remove = (id) => {
-    setTemplates((prev) => prev.filter((p) => p.id !== id));
-    templateStore.remove(id).catch((error) => console.error("[Firestore] Message template delete failed", error));
-  };
-  const duplicate = (tpl) => {
-    const copy = { ...tpl, id: uid("t"), title: tpl.title + " (Copy)" };
-    setTemplates((prev) => [...prev, copy]);
-    templateStore.create(copy).catch((error) => console.error("[Firestore] Message template create failed", error));
-  };
-  const sampleVars = { CustomerName: "Michelle", CompanyName: "ABC Sdn Bhd", QuotationNo: "QT-000123", QuotationDate: "24 Aug 2026", Amount: "RM 4,800", StaffName: "AMS" };
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold" style={{ color: INK }}>Message Templates</h2>
-          <p className="text-xs" style={{ color: "#9A9AA0" }}>Reusable shortcut messages by document type, category, follow-up stage, and language.</p>
-        </div>
-        <button onClick={() => setEditing("new")} className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg" style={{ background: INK, color: "white" }}><Plus size={14} /> Create Template</button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-white flex-1 min-w-[220px]" style={{ borderColor: LINE }}>
-          <Search size={14} style={{ color: "#9A9AA0" }} />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search templates" className="text-sm outline-none flex-1 bg-transparent" />
-        </div>
-        <Select value={docType} onChange={setDocType} options={["All", "Quotation"]} label="Type" />
-        <Select value={category} onChange={setCategory} options={["All", "Account", "Payroll"]} label="Category" />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        {filtered.map((t) => (
-          <div key={t.id} className="rounded-xl border bg-white p-4 flex flex-col gap-2" style={{ borderColor: LINE }}>
-            <div>
-              <div className="text-sm font-semibold" style={{ color: INK }}>{t.title}</div>
-              <div className="flex gap-1.5 mt-1 flex-wrap">
-                <Tag>{t.docType}</Tag><Tag>{t.category}</Tag><Tag>{t.stageTag}</Tag><Tag><Globe2 size={10} className="inline mr-0.5" />{t.language}</Tag><Tag>{t.type}</Tag>
-              </div>
-            </div>
-            <p className="text-xs leading-relaxed line-clamp-3" style={{ color: "#6B6C72" }}>{previewId === t.id ? renderTemplate(t.message, sampleVars) : t.message}</p>
-            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-              <IconBtn icon={Pencil} label="Edit" onClick={() => setEditing(t)} />
-              <IconBtn icon={Copy} label="Duplicate" onClick={() => duplicate(t)} />
-              <IconBtn icon={Search} label={previewId === t.id ? "Hide Preview" : "Preview"} onClick={() => setPreviewId(previewId === t.id ? null : t.id)} />
-              <IconBtn icon={Trash2} label="Delete" onClick={() => remove(t.id)} danger />
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && <div className="col-span-2 text-center text-sm py-10" style={{ color: "#9A9AA0" }}>No templates match these filters.</div>}
-      </div>
-      {editing && <TemplateEditor tpl={editing === "new" ? null : editing} onSave={save} onClose={() => setEditing(null)} />}
-    </div>
-  );
-}
-function TemplateEditor({ tpl, onSave, onClose }) {
-  const [form, setForm] = useState(tpl || { id: uid("t"), docType: "Quotation", category: "Account", stageCode: "day3", stageTag: "Day 3", language: "English", type: "WhatsApp", title: "", message: "" });
-  const stageOptions = [{ code: "day3", tag: "Day 3" }, { code: "day5", tag: "Day 5" }, { code: "day7", tag: "Day 7" }, { code: "day10", tag: "Day 10" }, { code: "day15", tag: "Day 15" }];
-  return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center" style={{ background: "rgba(18,23,43,0.45)" }}>
-      <div className="bg-white rounded-2xl w-full max-w-lg p-6 flex flex-col gap-3 shadow-2xl max-h-[85vh] overflow-y-auto">
-        <div className="flex items-center justify-between"><h3 className="text-sm font-semibold" style={{ color: INK }}>{tpl ? "Edit Template" : "Create Template"}</h3><button onClick={onClose}><X size={16} /></button></div>
-        <LabeledInput label="Title" value={form.title} onChange={(v) => setForm({ ...form, title: v })} />
-        <div className="grid grid-cols-2 gap-3">
-          <LabeledSelect label="Document Type" value={form.docType} onChange={(v) => setForm({ ...form, docType: v })} options={["Quotation"]} />
-          <LabeledSelect label="Category" value={form.category} onChange={(v) => setForm({ ...form, category: v })} options={["Account", "Payroll"]} />
-          <LabeledSelect label="Follow-up Stage" value={form.stageCode} onChange={(v) => setForm({ ...form, stageCode: v, stageTag: stageOptions.find((s) => s.code === v).tag })} options={stageOptions.map((s) => s.code)} display={(v) => stageOptions.find((s) => s.code === v).tag} />
-          <LabeledSelect label="Language" value={form.language} onChange={(v) => setForm({ ...form, language: v })} options={["English", "Bahasa Malaysia", "Mandarin"]} />
-          <LabeledSelect label="Message Type" value={form.type} onChange={(v) => setForm({ ...form, type: v })} options={["WhatsApp", "Email", "SMS"]} />
-        </div>
-        <div>
-          <label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Message</label>
-          <textarea value={form.message} onChange={(e) => setForm({ ...form, message: e.target.value })} rows={5} className="w-full text-sm rounded-lg border p-2.5 outline-none resize-none" style={{ borderColor: LINE }} placeholder="Hi {{CustomerName}}, following up on {{QuotationNo}}..." />
-          <p className="text-[10px] mt-1" style={{ color: "#B0B0B5" }}>Variables: {"{{CustomerName}} {{CompanyName}} {{QuotationNo}} {{QuotationDate}} {{Amount}} {{StaffName}}"}</p>
-        </div>
-        <div className="flex justify-end gap-2 mt-2">
-          <button onClick={onClose} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
-          <button onClick={() => onSave(form)} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: INK, color: "white" }}>Save Template</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-function LabeledInput({ label, value, onChange }) {
-  return (<div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>{label}</label><input value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none" style={{ borderColor: LINE }} /></div>);
-}
-function LabeledSelect({ label, value, onChange, options, display }) {
-  return (<div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>{label}</label><select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none bg-white" style={{ borderColor: LINE }}>{options.map((o) => <option key={o} value={o}>{display ? display(o) : o}</option>)}</select></div>);
 }
 
 /* ------------------------------ Holidays page ------------------------------ */
@@ -2613,51 +2344,6 @@ function StepBar({ step }) {
 }
 function MiniStat({ label, value, tint }) {
   return (<div className="flex flex-col items-center"><div className="text-xl font-semibold" style={{ color: tint }}>{value}</div><div className="text-[10px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}>{label}</div></div>);
-}
-
-/* ------------------------------ Import History page ------------------------------ */
-function ImportHistoryPage({ importHistory, appName, onOpenBatch }) {
-  return (
-    <div className="flex flex-col gap-4">
-      <div><h2 className="text-base font-semibold" style={{ color: INK }}>Import History</h2><p className="text-xs" style={{ color: "#9A9AA0" }}>Every PDF batch imported into {appName}, with new, updated, skipped, and error counts. Click a row to see which records came from it.</p></div>
-      <div className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: LINE }}>
-        {importHistory.length === 0 ? <EmptyImportState /> : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-[11px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}>
-                <th className="px-5 py-2.5 font-medium">File Name</th>
-                <th className="px-3 py-2.5 font-medium">Type</th>
-                <th className="px-3 py-2.5 font-medium">Import Date</th>
-                <th className="px-3 py-2.5 font-medium">Rows</th>
-                <th className="px-3 py-2.5 font-medium">New</th>
-                <th className="px-3 py-2.5 font-medium">Updated</th>
-                <th className="px-3 py-2.5 font-medium">Skipped</th>
-                <th className="px-3 py-2.5 font-medium">Errors</th>
-                <th className="px-5 py-2.5 font-medium text-right">Records</th>
-              </tr>
-            </thead>
-            <tbody>
-              {importHistory.map((b) => (
-                <tr key={b.id} className="border-t hover:bg-[#FBFAF7] cursor-pointer" style={{ borderColor: LINE }} onClick={() => onOpenBatch(b.batchId)}>
-                  <td className="px-5 py-3 font-medium flex items-center gap-1.5" style={{ color: INK }}><FileText size={13} style={{ color: TEAL }} />{b.fileName}</td>
-                  <td className="px-3 py-3"><Tag>{b.docType}</Tag></td>
-                  <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{fmtDateTime(new Date(b.importDate))}</td>
-                  <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{b.totalRows}</td>
-                  <td className="px-3 py-3 text-xs" style={{ color: GREEN }}>{b.newRecords}</td>
-                  <td className="px-3 py-3 text-xs" style={{ color: BLUE }}>{b.updated}</td>
-                  <td className="px-3 py-3 text-xs" style={{ color: "#9A9AA0" }}>{b.skipped}</td>
-                  <td className="px-3 py-3 text-xs" style={{ color: b.errors > 0 ? RED : "#9A9AA0" }}>{b.errors}</td>
-                  <td className="px-5 py-3 text-right">
-                    <button onClick={(e) => { e.stopPropagation(); onOpenBatch(b.batchId); }} className="text-xs font-medium px-3 py-1.5 rounded-lg inline-flex items-center gap-1" style={{ background: INK, color: "white" }}>View <ChevronRight size={13} /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
-  );
 }
 
 /* ------------------------------ Reports page ------------------------------ */
