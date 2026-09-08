@@ -1302,6 +1302,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
   const [draft, setDraft] = useState(EMPTY_FILTERS);
   const [applied, setApplied] = useState(EMPTY_FILTERS);
   const [selectedKeys, setSelectedKeys] = useState(new Set());
+  const [sortBy, setSortBy] = useState("Date");
 
   const years = Array.from(new Set(docs.map((d) => parseYMD(d.date).getFullYear()))).sort((a, b) => b - a);
 
@@ -1321,6 +1322,11 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
       if (!hay.includes(q)) return false;
     }
     return true;
+  });
+  const sortedDocs = [...filtered].sort((a, b) => {
+    if (sortBy === "Date") return parseYMD(a.date) - parseYMD(b.date);
+    if (sortBy === "Company Name") return String(a.company || "").localeCompare(String(b.company || ""), undefined, { sensitivity: "base" });
+    return String(a.docNo || "").localeCompare(String(b.docNo || ""), undefined, { numeric: true, sensitivity: "base" });
   });
   const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Won", "Lost", "No Response"];
   const isDirty = JSON.stringify(draft) !== JSON.stringify(applied);
@@ -1345,7 +1351,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
     if (allSelected) return new Set();
     return new Set(visibleDocs.map(keyOf));
   });
-  const selectedDocs = filtered.filter((d) => selectedKeys.has(keyOf(d)));
+  const selectedDocs = sortedDocs.filter((d) => selectedKeys.has(keyOf(d)));
 
   return (
     <div className="flex flex-col gap-4">
@@ -1363,6 +1369,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
         <Select value={draft.agent} onChange={(v) => setDraft({ ...draft, agent: v })} options={["All", ...agents.map((agent) => agent.name)]} label="Agent" />
         <Select value={draft.year} onChange={(v) => setDraft({ ...draft, year: v })} options={["All", ...years.map(String)]} label="Year" />
         <Select value={draft.month} onChange={(v) => setDraft({ ...draft, month: v })} options={["All", ...MONTH_NAMES]} label="Month" />
+        <Select value={sortBy} onChange={setSortBy} options={["Date", "Company Name", "Document No."]} label="Sort by" />
         <button onClick={runFilter} className="text-xs font-medium px-3.5 py-2 rounded-lg flex items-center gap-1.5" style={{ background: isDirty ? INK : "#3A3B41", color: "white" }}>
           <Filter size={13} /> Filter
         </button>
@@ -1389,7 +1396,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
         ) : filtered.length === 0 ? (
           <div className="px-5 py-10 text-center text-sm" style={{ color: "#9A9AA0" }}>No records match these filters.</div>
         ) : (
-          <FollowupTable docs={filtered} onOpenFollowup={onOpenFollowup} onOpenDetail={onOpenDetail} onDeleteDoc={onDeleteDoc}
+          <FollowupTable docs={sortedDocs} onOpenFollowup={onOpenFollowup} onOpenDetail={onOpenDetail} onDeleteDoc={onDeleteDoc}
             selectable={!!onBulkDelete} selectedKeys={selectedKeys} onToggleOne={toggleOne} onToggleAll={toggleAll} />
         )}
       </div>
