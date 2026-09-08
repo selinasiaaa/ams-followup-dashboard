@@ -65,6 +65,7 @@ const quotationFields = (record = {}) => {
   includeIfPresent("manualStatus", (value) => normalizeManualStatus(value));
   includeIfPresent("category", (value) => value ?? "");
   includeIfPresent("history", (value) => Array.isArray(value) ? value : []);
+  includeIfPresent("sendingPhoneId", (value) => value ?? null);
 
   if (Object.prototype.hasOwnProperty.call(record, "amount") || Object.prototype.hasOwnProperty.call(record, "totalAmount")) {
     output.totalAmount = Number(record.amount ?? record.totalAmount ?? 0);
@@ -131,4 +132,3 @@ export const phoneStore = {
   update: (id, changes) => run("update sending phone", () => setDoc(doc(db, COLLECTIONS.phones, id), { phoneName: changes.name || "", phoneNumber: changes.number || "", active: Boolean(changes.active), updatedAt: serverTimestamp() }, { merge: true })),
   remove: (id) => run("delete sending phone", () => deleteDoc(doc(db, COLLECTIONS.phones, id))),
 };
-
