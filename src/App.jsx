@@ -1231,6 +1231,7 @@ function FollowupTable({ docs, onOpenFollowup, onOpenDetail, onDeleteDoc, select
             )}
             <th className="px-3 py-2.5 font-medium">Doc Date</th>
             <th className="px-5 py-2.5 font-medium">Company Name</th>
+            <th className="px-3 py-2.5 font-medium">Category</th>
             <th className="px-3 py-2.5 font-medium">Person in Charge</th>
             <th className="px-3 py-2.5 font-medium">Phone</th>
             <th className="px-3 py-2.5 font-medium">Doc No.</th>
@@ -1252,6 +1253,7 @@ function FollowupTable({ docs, onOpenFollowup, onOpenDetail, onDeleteDoc, select
               )}
               <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{fmtDate(d.date)}</td>
               <td className="px-5 py-3"><button className="text-left" onClick={() => onOpenDetail(d)}><div className="font-medium" style={{ color: INK }}>{d.company}</div></button></td>
+              <td className="px-3 py-3 text-xs">{d.category ? <Tag>{d.category}</Tag> : "—"}</td>
               <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{d.contactName || "—"}</td>
               <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{d.phone || "—"}</td>
               <td className="px-3 py-3 font-mono text-xs" style={{ color: INK }}>{d.docNo}</td>
