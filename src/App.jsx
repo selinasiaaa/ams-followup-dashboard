@@ -54,6 +54,7 @@ const STATUS_STYLE = {
   "Overdue": { fg: RED, bg: RED_SOFT, icon: AlertTriangle },
   "Upcoming": { fg: BLUE, bg: BLUE_SOFT, icon: CalendarDays },
   "Completed Today": { fg: GREEN, bg: GREEN_SOFT, icon: CheckCircle2 },
+  "Completed": { fg: GREEN, bg: GREEN_SOFT, icon: CheckCircle2 },
   "Follow Up Later": { fg: VIOLET, bg: VIOLET_SOFT, icon: History },
   "Success": { fg: GREEN, bg: GREEN_SOFT, icon: TrendingUp },
   "Lost": { fg: GRAY, bg: GRAY_SOFT, icon: TrendingDown },
@@ -71,7 +72,7 @@ const ACTION_STYLE = {
 };
 
 const MANUAL_QUOTATION_STATUSES = ["No Response", "Follow Up Later", "Success", "Lost"];
-const SYSTEM_QUOTATION_STATUSES = ["Due Today", "Overdue", "Upcoming", "Completed Today"];
+const SYSTEM_QUOTATION_STATUSES = ["Due Today", "Overdue", "Upcoming", "Completed Today", "Completed"];
 const MAX_HISTORY_EVENTS = 50;
 const DEFAULT_APP_NAME = "AMS-FOLLOWUP";
 
@@ -83,6 +84,17 @@ const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate(
 const parseYMD = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
 const fmtDate = (s) => (s ? parseYMD(s).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—");
 const fmtDateTime = (d) => d.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+const asDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value?.toDate === "function") return value.toDate();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+const fmtImportDate = (value) => {
+  const date = asDate(value);
+  return date ? fmtDateTime(date) : "—";
+};
 const diffCalendarDays = (a, b) => Math.round((a - b) / (1000 * 60 * 60 * 24));
 
 function isHoliday(date, holidays, state) {
@@ -422,7 +434,7 @@ function StatCard({ label, value, tint, sub }) {
 }
 function NavItem({ icon: Icon, label, active, onClick, count }) {
   return (
-    <button onClick={onClick} className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm transition-colors"
+    <button onClick={onClick} className="w-full shrink-0 md:shrink flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm transition-colors"
       style={{ background: active ? "rgba(15,138,130,0.18)" : "transparent", color: active ? "#5FD8CC" : "#B7B9C6" }}
       onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
       onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}>
@@ -591,7 +603,8 @@ function Console({ appName, setAppName, onSignOut }) {
         if (!cancelled) {
           if (storedQuotations.length) setQuotations(dedupeQuotationsByDocNo(storedQuotations.map((record) => ({
             ...record,
-            date: record.date || record.docDate || "",
+             date: record.date || record.docDate || "",
+             importDate: record.importDate || record.createdAt || null,
             company: record.company || record.companyName || "",
             contactName: record.contactName || record.personInCharge || "",
             phone: record.phone || "",
@@ -687,6 +700,8 @@ function Console({ appName, setAppName, onSignOut }) {
       derivedStatus = manualStatus;
     } else if (lastFollowupDate === ymd(TODAY)) {
       derivedStatus = "Completed Today";
+    } else if (idx >= totalStages) {
+      derivedStatus = "Completed";
     } else if (!nextDate) {
       derivedStatus = "Upcoming";
     } else {
@@ -723,7 +738,12 @@ function Console({ appName, setAppName, onSignOut }) {
   if (!dataLoaded) return <LoadingScreen label="Loading your data…" />;
 
   const todaysFollowups = allDocs.filter((d) => d.status === "Due Today" || d.status === "Overdue")
-    .sort((a, b) => (a.status === "Overdue" && b.status !== "Overdue" ? -1 : a.status !== "Overdue" && b.status === "Overdue" ? 1 : 0));
+    .sort((a, b) => {
+      const priority = (status) => status === "Overdue" ? 0 : 1;
+      const priorityDiff = priority(a.status) - priority(b.status);
+      if (priorityDiff) return priorityDiff;
+      return (a.nextDate?.getTime?.() || 0) - (b.nextDate?.getTime?.() || 0);
+    });
   const counts = {
     dueToday: allDocs.filter((d) => d.status === "Due Today").length,
     overdue: allDocs.filter((d) => d.status === "Overdue").length,
@@ -790,8 +810,10 @@ function Console({ appName, setAppName, onSignOut }) {
         assignedAgent: params?.agentName || d.assignedAgent || d.staff || "",
         sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
         completedStages: act === "Completed" ? Math.min((d.completedStages || 0) + 1, stages.length) : d.completedStages,
-        rescheduleDate: act === "Rescheduled" ? params?.rescheduleDate : d.rescheduleDate,
-        manualStatus: act === "Follow Up Later" 
+        rescheduleDate: act === "Completed" ? null : act === "Rescheduled" ? params?.rescheduleDate : d.rescheduleDate,
+        manualStatus: act === "Completed"
+          ? null
+          : act === "Follow Up Later"
           ? "Follow Up Later" 
           : act === "Rescheduled" 
             ? null 
@@ -957,9 +979,9 @@ function Console({ appName, setAppName, onSignOut }) {
   const drillDocs = customerDrill ? allDocs.filter((d) => d.company === customerDrill.company && d.contactName === customerDrill.name) : [];
 
   return (
-    <div className="flex h-full w-full" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }}>
-      <aside className="w-60 shrink-0 flex flex-col py-5 px-3" style={{ background: INK }}>
-        <div className="px-2.5 mb-6 flex items-center gap-2.5">
+    <div className="flex min-h-full w-full flex-col md:flex-row" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }}>
+      <aside className="w-full md:w-60 shrink-0 flex flex-col py-3 md:py-5 px-3" style={{ background: INK }}>
+        <div className="px-2.5 mb-3 md:mb-6 flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm" style={{ background: TEAL, color: "#08201D" }}>
             {appName.replace(/[^A-Z]/g, "").slice(0, 2) || appName.slice(0, 2).toUpperCase()}
           </div>
@@ -968,7 +990,7 @@ function Console({ appName, setAppName, onSignOut }) {
             <div className="text-[11px] leading-tight" style={{ color: "#7B7E92" }}>Follow-up Console</div>
           </div>
         </div>
-        <nav className="flex flex-col gap-1">
+        <nav className="flex flex-row md:flex-col gap-1 overflow-x-auto pb-1 md:pb-0">
           <NavItem icon={LayoutDashboard} label="Dashboard" active={page === "dashboard"} onClick={() => setPage("dashboard")} />
           <NavItem icon={UploadCloud} label="Import Data" active={page === "import"} onClick={() => setPage("import")} />
           <NavItem icon={Clock} label="Follow-ups" active={page === "followups"} onClick={() => setPage("followups")} count={counts.dueToday + counts.overdue} />
@@ -976,7 +998,7 @@ function Console({ appName, setAppName, onSignOut }) {
           <NavItem icon={BarChart3} label="Reports" active={page === "reports"} onClick={() => setPage("reports")} />
           <NavItem icon={SettingsIcon} label="Settings" active={page === "settings"} onClick={() => setPage("settings")} />
         </nav>
-        <div className="mt-auto px-2.5 pt-4 border-t" style={{ borderColor: "#262B45" }}>
+        <div className="mt-3 md:mt-auto px-2.5 pt-3 md:pt-4 border-t" style={{ borderColor: "#262B45" }}>
           <div className="flex items-center justify-between mb-2">
             <div>
               <div className="text-[11px]" style={{ color: "#6E7189" }}>Signed in as</div>
@@ -992,7 +1014,7 @@ function Console({ appName, setAppName, onSignOut }) {
 
       <main className="flex-1 min-w-0 overflow-y-auto">
         <TopBar counts={counts} today={TODAY} appName={appName} onOpenFollowups={(filters) => { setFollowupPreset(filters); setPage("followups"); }} />
-        <div className="px-8 py-6">
+        <div className="px-4 sm:px-8 py-4 sm:py-6">
           {page === "dashboard" && (
             <Dashboard counts={counts} allQuotations={allQuotations} todaysFollowups={todaysFollowups}
               onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} totalRecords={totalRecords}
@@ -1140,12 +1162,12 @@ export default function App() {
 /* ------------------------------ Top bar ------------------------------ */
 function TopBar({ counts, today, appName, onOpenFollowups }) {
   return (
-    <div className="sticky top-0 z-10 border-b px-8 py-4 flex items-center justify-between" style={{ background: "rgba(246,245,241,0.9)", backdropFilter: "blur(6px)", borderColor: LINE }}>
+    <div className="sticky top-0 z-10 border-b px-4 sm:px-8 py-3 sm:py-4 flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 justify-between" style={{ background: "rgba(246,245,241,0.9)", backdropFilter: "blur(6px)", borderColor: LINE }}>
       <div>
         <h1 className="text-lg font-semibold" style={{ color: INK }}>Good morning, AMS</h1>
         <p className="text-xs" style={{ color: "#8B8C92" }}>{today.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · {appName}</p>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto pb-1">
         <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Due Today" })}><Badge icon={Bell} label="Due Today" value={counts.dueToday} fg={AMBER} bg={AMBER_SOFT} /></button>
         <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Overdue" })}><Badge icon={AlertTriangle} label="Overdue" value={counts.overdue} fg={RED} bg={RED_SOFT} /></button>
         <button onClick={() => onOpenFollowups && onOpenFollowups({ status: "Upcoming" })}><Badge icon={CalendarDays} label="Upcoming" value={counts.upcoming} fg={BLUE} bg={BLUE_SOFT} /></button>
@@ -1167,7 +1189,7 @@ function Badge({ icon: Icon, label, value, fg, bg }) {
 
 /* ------------------------------ Dashboard ------------------------------ */
 function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onOpenDetail, totalRecords, onGoImport }) {
-  const totalActive = allQuotations.filter((q) => !["Success", "Lost"].includes(q.status)).length;
+  const totalActive = allQuotations.filter((q) => !["Success", "Lost", "Completed"].includes(q.status)).length;
   const accountQ = allQuotations.filter((q) => q.category === "Account").length;
   const payrollQ = allQuotations.filter((q) => q.category === "Payroll").length;
   const success = allQuotations.filter((d) => d.status === "Success").length;
@@ -1175,7 +1197,7 @@ function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onO
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="rounded-xl border-2 border-dashed p-6 flex items-center justify-between" style={{ borderColor: LINE }}>
+      <div className="rounded-xl border-2 border-dashed p-4 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between" style={{ borderColor: LINE }}>
         <div className="flex items-center gap-3">
           <Info size={18} style={{ color: "#9A9AA0" }} />
           <div>
@@ -1186,7 +1208,7 @@ function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onO
         <button onClick={onGoImport} className="text-xs font-medium px-3.5 py-2 rounded-lg" style={{ background: INK, color: "white" }}>Import PDF</button>
       </div>
 
-      <div className="grid grid-cols-4 lg:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         <StatCard label="Active Quotations" value={totalActive} />
         <StatCard label="Due Today" value={counts.dueToday} tint={AMBER} />
         <StatCard label="Overdue" value={counts.overdue} tint={RED} />
@@ -1229,8 +1251,9 @@ function FollowupTable({ docs, onOpenFollowup, onOpenDetail, onDeleteDoc, select
                 <input type="checkbox" checked={allSelected} onChange={() => onToggleAll(docs)} />
               </th>
             )}
-            <th className="px-3 py-2.5 font-medium">Doc Date</th>
-            <th className="px-5 py-2.5 font-medium">Company Name</th>
+             <th className="px-3 py-2.5 font-medium">Doc Date</th>
+             <th className="px-3 py-2.5 font-medium">Import Date</th>
+             <th className="px-5 py-2.5 font-medium">Company Name</th>
             <th className="px-3 py-2.5 font-medium">Category</th>
             <th className="px-3 py-2.5 font-medium">Person in Charge</th>
             <th className="px-3 py-2.5 font-medium">Phone</th>
@@ -1251,8 +1274,9 @@ function FollowupTable({ docs, onOpenFollowup, onOpenDetail, onDeleteDoc, select
                   <input type="checkbox" checked={selectedKeys.has(keyOf(d))} onChange={() => onToggleOne(d)} />
                 </td>
               )}
-              <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{fmtDate(d.date)}</td>
-              <td className="px-5 py-3"><button className="text-left" onClick={() => onOpenDetail(d)}><div className="font-medium" style={{ color: INK }}>{d.company}</div></button></td>
+               <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{fmtDate(d.date)}</td>
+               <td className="px-3 py-3 text-xs whitespace-nowrap" style={{ color: "#5C5D63" }}>{fmtImportDate(d.importDate)}</td>
+               <td className="px-5 py-3"><button className="text-left" onClick={() => onOpenDetail(d)}><div className="font-medium" style={{ color: INK }}>{d.company}</div></button></td>
               <td className="px-3 py-3 text-xs">{d.category ? <Tag>{d.category}</Tag> : "—"}</td>
               <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{d.contactName || "—"}</td>
               <td className="px-3 py-3 text-xs" style={{ color: "#5C5D63" }}>{d.phone || "—"}</td>
@@ -1264,7 +1288,7 @@ function FollowupTable({ docs, onOpenFollowup, onOpenDetail, onDeleteDoc, select
               <td className="px-3 py-3"><StatusPill status={d.status} /></td>
               <td className="px-5 py-3 text-right">
                 <div className="flex items-center justify-end gap-1.5">
-                  <button onClick={() => onOpenFollowup(d)} className="text-xs font-medium px-3 py-1.5 rounded-lg inline-flex items-center gap-1" style={{ background: INK, color: "white" }}>Follow Up <ChevronRight size={13} /></button>
+                   {!['Completed', 'Success', 'Lost'].includes(d.status) && <button onClick={() => onOpenFollowup(d)} className="text-xs font-medium px-3 py-1.5 rounded-lg inline-flex items-center gap-1" style={{ background: INK, color: "white" }}>Follow Up <ChevronRight size={13} /></button>}
                   {onDeleteDoc && (
                     <button onClick={() => onDeleteDoc(d)} title="Delete" className="p-1.5 rounded-lg" style={{ color: RED, background: RED_SOFT }}><Trash2 size={13} /></button>
                   )}
@@ -1311,9 +1335,10 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
   const sortedDocs = [...filtered].sort((a, b) => {
     if (sortBy === "Date") return parseYMD(a.date) - parseYMD(b.date);
     if (sortBy === "Company Name") return String(a.company || "").localeCompare(String(b.company || ""), undefined, { sensitivity: "base" });
+    if (sortBy === "Import Date") return (asDate(b.importDate)?.getTime() || 0) - (asDate(a.importDate)?.getTime() || 0);
     return String(a.docNo || "").localeCompare(String(b.docNo || ""), undefined, { numeric: true, sensitivity: "base" });
   });
-  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Success", "Lost", "No Response"];
+  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Completed", "Follow Up Later", "Completed Today", "Success", "Lost", "No Response"];
   const isDirty = JSON.stringify(draft) !== JSON.stringify(applied);
   const isFilteredAtAll = Object.entries(applied).some(([k, v]) => v !== EMPTY_FILTERS[k]);
 
@@ -1354,7 +1379,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
         <Select value={draft.agent} onChange={(v) => setDraft({ ...draft, agent: v })} options={["All", ...agents.map((agent) => agent.name)]} label="Agent" />
         <Select value={draft.year} onChange={(v) => setDraft({ ...draft, year: v })} options={["All", ...years.map(String)]} label="Year" />
         <Select value={draft.month} onChange={(v) => setDraft({ ...draft, month: v })} options={["All", ...MONTH_NAMES]} label="Month" />
-        <Select value={sortBy} onChange={setSortBy} options={["Date", "Company Name", "Document No."]} label="Sort by" />
+         <Select value={sortBy} onChange={setSortBy} options={["Date", "Import Date", "Company Name", "Document No."]} label="Sort by" />
         <button onClick={runFilter} className="text-xs font-medium px-3.5 py-2 rounded-lg flex items-center gap-1.5" style={{ background: isDirty ? INK : "#3A3B41", color: "white" }}>
           <Filter size={13} /> Filter
         </button>
@@ -1514,7 +1539,7 @@ function CustomerDocsDrawer({ customer, docs, onClose, onOpenDetail }) {
   return (
     <div className="fixed inset-0 z-25 flex items-center justify-end" style={{ background: "rgba(18,23,43,0.4)" }}>
       <div className="h-full w-full max-w-xl bg-white shadow-2xl flex flex-col">
-        <div className="flex items-start justify-between px-6 py-5 border-b" style={{ borderColor: LINE }}>
+        <div className="flex items-start justify-between px-4 sm:px-6 py-5 border-b" style={{ borderColor: LINE }}>
           <div>
             <div className="text-xs font-medium" style={{ color: "#9A9AA0" }}>Customer</div>
             <h3 className="text-lg font-semibold" style={{ color: INK }}>{customer.name}</h3>
@@ -1522,7 +1547,7 @@ function CustomerDocsDrawer({ customer, docs, onClose, onOpenDetail }) {
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[#F2F1EC]"><X size={18} /></button>
         </div>
-        <div className="px-6 py-5 overflow-y-auto flex-1 flex flex-col gap-3">
+        <div className="px-4 sm:px-6 py-5 overflow-y-auto flex-1 flex flex-col gap-3">
           <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#9A9AA0" }}>{docs.length} document{docs.length !== 1 ? "s" : ""}</div>
           {docs.length === 0 ? (
             <div className="text-sm text-center py-10" style={{ color: "#9A9AA0" }}>No quotations for this customer.</div>
@@ -1593,8 +1618,8 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[#F2F1EC]"><X size={16} /></button>
         </div>
-        <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto flex-1">
-            <div className="grid grid-cols-2 gap-3 text-xs">
+        <div className="px-4 sm:px-5 py-4 flex flex-col gap-4 overflow-y-auto flex-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
             <Field label="Document No." value={doc.docNo} />
             <Field label="Follow-up Stage" value={stageInfo ? `${stageInfo.label} (${stageInfo.tag})` : "Completed"} />
             <Field label="Next Follow-up Date" value={doc.nextDate ? fmtDate(ymd(doc.nextDate)) : "—"} />
@@ -1631,7 +1656,7 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
             </div>
           </div>
         </div>
-          <div className="px-5 py-4 border-t grid grid-cols-2 gap-2" style={{ borderColor: LINE }}>
+          <div className="px-4 sm:px-5 py-4 border-t grid grid-cols-1 sm:grid-cols-2 gap-2" style={{ borderColor: LINE }}>
           <ActionBtn label="Mark as Completed" onClick={() => submitAction("Completed")} primary />
           <ActionBtn label="Customer Response" onClick={() => setCustomerResponseOpen(true)} />
           <ActionBtn label="Reschedule" onClick={() => setReschedulingOpen((v) => !v)} tint={BLUE} />
@@ -1702,17 +1727,17 @@ function DetailDrawer({ doc, onClose, onOpenFollowup, onUpdateCategory }) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-end" style={{ background: "rgba(18,23,43,0.4)" }}>
       <div className="h-full w-full max-w-xl bg-white shadow-2xl flex flex-col">
-        <div className="flex items-start justify-between px-6 py-5 border-b" style={{ borderColor: LINE }}>
+        <div className="flex items-start justify-between px-4 sm:px-6 py-5 border-b" style={{ borderColor: LINE }}>
           <div>
             <div className="text-xs font-medium" style={{ color: "#9A9AA0" }}>{doc.docType} · {doc.docNo}</div>
             <h3 className="text-lg font-semibold" style={{ color: INK }}>{doc.customer?.company}</h3>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[#F2F1EC]"><X size={18} /></button>
         </div>
-        <div className="px-6 py-5 overflow-y-auto flex-1 flex flex-col gap-6">
+         <div className="px-4 sm:px-6 py-5 overflow-y-auto flex-1 flex flex-col gap-6">
           <section>
             <SectionTitle>Customer Information</SectionTitle>
-            <div className="grid grid-cols-2 gap-3 text-sm">
+             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
               <Field label="Contact Person" value={doc.customer?.name} />
               <Field label="Company" value={doc.customer?.company} />
               <Field label="Phone" value={doc.customer?.phone} />
@@ -1721,7 +1746,7 @@ function DetailDrawer({ doc, onClose, onOpenFollowup, onUpdateCategory }) {
           </section>
           <section>
             <SectionTitle>{doc.docType} Information</SectionTitle>
-            <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
               <Field label="Document No." value={doc.docNo} />
               <Field label="Date" value={fmtDate(doc.date)} />
               <Field label="Amount" value={money(doc.amount)} />
@@ -1739,9 +1764,9 @@ function DetailDrawer({ doc, onClose, onOpenFollowup, onUpdateCategory }) {
           </section>
           <section>
             <SectionTitle>Data Source</SectionTitle>
-            <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
               <Field label="Source" value={doc.source} />
-              <Field label="Import Date" value={doc.importDate ? fmtDateTime(new Date(doc.importDate)) : "—"} />
+               <Field label="Import Date" value={fmtImportDate(doc.importDate)} />
               <Field label="Original File" value={doc.importFileName} />
               <Field label="Import Batch" value={doc.importBatchId} />
             </div>
@@ -1749,7 +1774,7 @@ function DetailDrawer({ doc, onClose, onOpenFollowup, onUpdateCategory }) {
           <section>
             <div className="flex items-center justify-between mb-2">
               <SectionTitle noMargin>Follow-up Timeline</SectionTitle>
-              {!["Success", "Lost"].includes(doc.status) && <button onClick={() => onOpenFollowup(doc)} className="text-xs font-medium px-3 py-1.5 rounded-lg" style={{ background: INK, color: "white" }}>Follow Up</button>}
+              {!['Success', 'Lost', 'Completed'].includes(doc.status) && <button onClick={() => onOpenFollowup(doc)} className="text-xs font-medium px-3 py-1.5 rounded-lg" style={{ background: INK, color: "white" }}>Follow Up</button>}
             </div>
             <Timeline events={doc.history} />
           </section>
@@ -1818,7 +1843,7 @@ function HolidaysPage({ holidays, setHolidays, operatingState, setOperatingState
       </div>
 
       <div className="rounded-xl border p-4 flex items-center justify-between flex-wrap gap-3" style={{ borderColor: TEAL, background: TEAL_SOFT }}>
-        <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
           <Info size={15} style={{ color: TEAL }} />
           <div className="text-xs" style={{ color: TEAL }}>
             <div className="font-semibold">Operating State</div>
@@ -1830,7 +1855,7 @@ function HolidaysPage({ holidays, setHolidays, operatingState, setOperatingState
         </select>
       </div>
 
-      <div className="rounded-xl border bg-white p-4 grid grid-cols-4 gap-3 items-end" style={{ borderColor: LINE }}>
+      <div className="rounded-xl border bg-white p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end" style={{ borderColor: LINE }}>
         <div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Date</label><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none" style={{ borderColor: LINE }} /></div>
         <div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Holiday Name</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Hari Raya Haji" className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none" style={{ borderColor: LINE }} /></div>
         <div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>State</label><select value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none bg-white" style={{ borderColor: LINE }}>{MY_STATES.map((s) => <option key={s} value={s}>{s}</option>)}</select></div>
@@ -1978,6 +2003,15 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
         const contactConf = mapping["contactName"] ? (conf[mapping["contactName"]] ?? 0) : 0;
         rec.companyConfidence = companyConf;
         rec.contactConfidence = contactConf;
+        rec.reviewReasons = fields.flatMap((field) => {
+          const value = String(get(field.key) || "").trim();
+          const confidence = mapping[field.key] ? (conf[mapping[field.key]] ?? 0) : 0;
+          const unusual = (field.key === "company" && isUnusualCompany(value)) || (field.key === "contactName" && isUnusualPerson(value));
+          const reasons = [];
+          if (unusual) reasons.push(`${field.label} looks unusual`);
+          if (confidence > 0 && confidence < 0.8) reasons.push(`${field.label} confidence is below 80%`);
+          return reasons;
+        });
         if (!category) issues.push("Missing category");
         if (issues.length) errors.push({ ...rec, issues });
         else valid.push(rec);
@@ -1992,8 +2026,8 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
 
       setValidRows(valid);
       setErrorRows(errors);
-      // identify low-confidence rows (company or contact < 0.6)
-      const low = valid.filter((r) => (r.companyConfidence || 0) < 0.6 || (r.contactConfidence || 0) < 0.6);
+       // Require confirmation for any non-green confidence or unusual company/person value.
+       const low = valid.filter((r) => r.reviewReasons?.length > 0);
       setLowConfidenceRows(low);
       setConfirmLowConfidence(false);
       const dupes = valid.filter((r) => existingList.some((d) => (isCustomer ? d.company.trim().toLowerCase() === r.company.trim().toLowerCase() : d.docNo === r.docNo)));
@@ -2153,7 +2187,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
               <span className="text-xs" style={{ color: "#9A9AA0" }}>{rawRows.length} rows detected</span>
             </div>
             <div className="text-xs mb-2 font-medium" style={{ color: "#6B6C72" }}>Detected PDF fields in import sequence. Check and correct them before continuing.</div>
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {fields.map((f) => {
                 const sampleVal = mapping[f.key] ? (f.key === "date" ? parseDocumentDate(rawRows[0]?.[mapping[f.key]]) || "" : rawRows[0]?.[mapping[f.key]] || "") : "";
                 const sampleConf = rawConfidences[0] && mapping[f.key] ? (rawConfidences[0][mapping[f.key]] ?? 0) : 0;
@@ -2268,18 +2302,20 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
               Ready to import <strong style={{ color: INK }}>{validRows.length}</strong> valid row{validRows.length !== 1 ? "s" : ""}
               {duplicates.length > 0 && <> · <strong style={{ color: INK }}>{duplicates.filter((d) => (resolutions[d.keyValue] || "skip") !== "skip").length}</strong> will update/duplicate, <strong style={{ color: INK }}>{duplicates.filter((d) => (resolutions[d.keyValue] || "skip") === "skip").length}</strong> will be skipped</>}
             </div>
-            {lowConfidenceRows.length > 0 && (
-              <div className="text-xs" style={{ color: RED }}>
-                {lowConfidenceRows.length} row(s) have low-confidence Company/Person fields. Please verify them below and check to confirm.
-              </div>
-            )}
-            <div className="flex gap-2">
-              <button onClick={reset} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
-              <button onClick={() => setConfirmLowConfidence(false)} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Unconfirm</button>
-              <label className="text-xs flex items-center gap-2" style={{ alignItems: "center" }}>
-                <input type="checkbox" checked={confirmLowConfidence} onChange={(e) => setConfirmLowConfidence(e.target.checked)} />
-                <span style={{ color: "#5C5D63" }}>I confirm low-confidence fields are correct</span>
-              </label>
+             {lowConfidenceRows.length > 0 && (
+               <div className="text-xs" style={{ color: RED }}>
+                 {lowConfidenceRows.length} row(s) need review because a field is not green confidence or looks unusual. Verify them and check to confirm.
+               </div>
+             )}
+             <div className="flex gap-2">
+               <button onClick={reset} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
+               {lowConfidenceRows.length > 0 && <>
+                 <button onClick={() => setConfirmLowConfidence(false)} className="text-xs font-medium px-3.5 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Unconfirm</button>
+                 <label className="text-xs flex items-center gap-2" style={{ alignItems: "center" }}>
+                   <input type="checkbox" checked={confirmLowConfidence} onChange={(e) => setConfirmLowConfidence(e.target.checked)} />
+                   <span style={{ color: "#5C5D63" }}>I confirm the reviewed fields are correct</span>
+                 </label>
+               </>}
               <button onClick={finalizeImport} disabled={!importAgent || !importPhone || (lowConfidenceRows.length > 0 && !confirmLowConfidence)} className="text-xs font-medium px-3.5 py-2 rounded-lg flex items-center gap-1.5" style={!importAgent || !importPhone || (lowConfidenceRows.length > 0 && !confirmLowConfidence) ? { background: "#B7B9C6", color: "white", cursor: "not-allowed" } : { background: INK, color: "white" }}><UploadCloud size={13} /> Import {validRows.length} Records</button>
             </div>
           </div>
@@ -2290,7 +2326,7 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
         <div className="rounded-xl border bg-white p-8 flex flex-col items-center text-center gap-3" style={{ borderColor: LINE }}>
           <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: GREEN_SOFT }}><CheckCircle2 size={22} style={{ color: GREEN }} /></div>
           <div className="text-base font-semibold" style={{ color: INK }}>Import successful</div>
-          <div className="grid grid-cols-4 gap-4 mt-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-2">
             <MiniStat label="New" value={result.newCount} tint={GREEN} />
             <MiniStat label="Updated" value={result.updatedCount} tint={BLUE} />
             <MiniStat label="Skipped" value={result.skippedCount} tint={GRAY} />
@@ -2340,7 +2376,7 @@ function MiniStat({ label, value, tint }) {
 
 /* ------------------------------ Reports page ------------------------------ */
 function ReportsPage({ allDocs }) {
-  const statuses = ["Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "Success", "Lost"];
+  const statuses = ["Due Today", "Overdue", "Upcoming", "Completed", "Follow Up Later", "Completed Today", "Success", "Lost"];
   const byStatus = statuses.map((s) => ({ name: s, value: allDocs.filter((d) => d.status === s).length }));
   const byCategory = ["Account", "Payroll"].map((c) => ({ name: c, value: allDocs.filter((d) => (d.category || "") === c).length }));
   const successLost = [{ name: "Success", value: allDocs.filter((d) => d.status === "Success").length }, { name: "Lost", value: allDocs.filter((d) => d.status === "Lost").length }];
@@ -2364,7 +2400,7 @@ function ReportsPage({ allDocs }) {
   return (
     <div className="flex flex-col gap-4">
       <h2 className="text-base font-semibold" style={{ color: INK }}>Reports</h2>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <ChartCard title="Follow-ups by Status">
           <ResponsiveContainer width="100%" height={240}>
             <PieChart><Pie data={byStatus} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>{byStatus.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} /></PieChart>
@@ -2482,7 +2518,7 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
         <p className="text-xs" style={{ color: "#9A9AA0" }}>Application name, follow-up schedules, and general configuration.</p>
       </div>
 
-      <div className="rounded-xl border bg-white p-5 flex items-end gap-3" style={{ borderColor: LINE }}>
+      <div className="rounded-xl border bg-white p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-end gap-3" style={{ borderColor: LINE }}>
         <div className="flex-1">
           <label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Application Name</label>
           <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} className="w-full text-sm rounded-lg border px-3 py-2 outline-none" style={{ borderColor: LINE }} />
@@ -2496,7 +2532,7 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
         <p className="text-xs mb-2" style={{ color: "#9A9AA0" }}>Configure the working-day gap for each stage — no code changes needed. Changes recalculate every follow-up date immediately.</p>
       </div>
       <ScheduleTable docKey="quotation" title="Quotation Follow-up Schedule" />
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: LINE }}>
           <div className="px-5 py-3 border-b flex items-center justify-between" style={{ borderColor: LINE }}><h4 className="text-sm font-semibold" style={{ color: INK }}>Agents</h4><button onClick={addAgent} className="text-xs font-medium px-2.5 py-1.5 rounded-lg" style={{ background: INK, color: "white" }}><Plus size={12} className="inline mr-1" />Add Agent</button></div>
           <div className="p-4 flex flex-col gap-2">{agents.map((agent) => <div key={agent.id} className="flex items-center gap-2"><input value={agent.name} onChange={(e) => updateAgent(agent, { name: e.target.value })} className="flex-1 text-xs rounded-md border px-2 py-1.5" style={{ borderColor: LINE }} /><label className="text-xs flex items-center gap-1" style={{ color: "#5C5D63" }}><input type="checkbox" checked={agent.active} onChange={(e) => updateAgent(agent, { active: e.target.checked })} /> Active</label><button onClick={() => saveAgent(agent)} title="Save agent" className="p-1 rounded" style={{ color: TEAL }}><Save size={13} /></button><button onClick={() => removeAgent(agent)} title="Delete agent" className="p-1 rounded" style={{ color: RED }}><Trash2 size={13} /></button></div>)}</div>
@@ -2515,7 +2551,7 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
         <h3 className="text-sm font-semibold mb-1" style={{ color: INK }}>Data Storage</h3>
         <p className="text-xs mb-2" style={{ color: "#9A9AA0" }}>Quotations, customers, templates, holidays, and schedules are saved automatically as you work, and are still here the next time you sign in.</p>
       </div>
-      <div className="rounded-xl border bg-white p-5 flex items-center justify-between gap-3" style={{ borderColor: LINE }}>
+       <div className="rounded-xl border bg-white p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3" style={{ borderColor: LINE }}>
         <div className="flex items-center gap-2 text-xs" style={{ color: "#5C5D63" }}>
           <CheckCircle2 size={14} style={{ color: GREEN }} /> Autosave is on — changes are saved a moment after you make them.
         </div>

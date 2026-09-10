@@ -66,6 +66,10 @@ const quotationFields = (record = {}) => {
   includeIfPresent("category", (value) => value ?? "");
   includeIfPresent("history", (value) => Array.isArray(value) ? value : []);
   includeIfPresent("sendingPhoneId", (value) => value ?? null);
+  includeIfPresent("source", (value) => value ?? "");
+  includeIfPresent("importDate", (value) => value ?? null);
+  includeIfPresent("importFileName", (value) => value ?? "");
+  includeIfPresent("importBatchId", (value) => value ?? "");
 
   if (Object.prototype.hasOwnProperty.call(record, "amount") || Object.prototype.hasOwnProperty.call(record, "totalAmount")) {
     output.totalAmount = Number(record.amount ?? record.totalAmount ?? 0);
