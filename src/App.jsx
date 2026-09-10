@@ -12,6 +12,9 @@ import {
   PieChart, Pie, Cell, LineChart, Line, Legend
 } from "recharts";
 import * as pdfjsLib from "pdfjs-dist";
+import HolidayCalendar from "./HolidayCalendar";
+import useHolidayFeed from "./useHolidayFeed";
+import { appliesToState, mergeHolidays, MANUAL_KEY, readSaved, saveLocal } from "./holidayData";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { browserLocalPersistence, onAuthStateChanged, setPersistence, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth, FIREBASE_LOGIN_EMAIL } from "./firebase";
@@ -99,7 +102,7 @@ const diffCalendarDays = (a, b) => Math.round((a - b) / (1000 * 60 * 60 * 24));
 
 function isHoliday(date, holidays, state) {
   const s = ymd(date);
-  return holidays.some((h) => h.date === s && (h.state === "All" || h.state === state));
+  return holidays.some((h) => h.date === s && appliesToState(h, state));
 }
 function isWorkingDay(date, holidays, state) {
   const day = date.getDay();
@@ -559,10 +562,16 @@ function LoadingScreen({ label }) {
 function Console({ appName, setAppName, onSignOut }) {
   const [page, setPage] = useState("dashboard");
   const [followupPreset, setFollowupPreset] = useState(null);
-  const [holidays, setHolidays] = useState(DEFAULT_HOLIDAYS);
-  const [operatingState, setOperatingState] = useState(DEFAULT_OPERATING_STATE);
+  const [manualHolidays, setHolidays] = useState(() => readSaved(MANUAL_KEY, DEFAULT_HOLIDAYS));
+  const [operatingState, setOperatingState] = useState(() => readSaved("ams-holiday-office-state", DEFAULT_OPERATING_STATE));
   const [schedules, setSchedules] = useState(DEFAULT_SCHEDULES);
   const [quotations, setQuotations] = useState([]);
+  const holidayYears = [...new Set(quotations.flatMap(q => {
+    const year = Number((q.date || "").slice(0, 4));
+    return year >= 2000 && year <= 2100 ? [year, year + 1] : [];
+  }))].sort().join(",");
+  const holidayFeed = useHolidayFeed(holidayYears);
+  const holidays = useMemo(() => mergeHolidays(manualHolidays, holidayFeed.cache, DEFAULT_HOLIDAYS), [manualHolidays, holidayFeed.cache]);
   const [customers, setCustomers] = useState([]);
   const [agents, setAgents] = useState(DEFAULT_AGENTS);
   const [phones, setPhones] = useState(DEFAULT_PHONES);
@@ -573,6 +582,8 @@ function Console({ appName, setAppName, onSignOut }) {
   const [toast, setToast] = useState(null);
   const [customerDrill, setCustomerDrill] = useState(null); // { company, name }
   const [dataLoaded, setDataLoaded] = useState(false);
+  useEffect(() => { if (dataLoaded) saveLocal(MANUAL_KEY, manualHolidays); }, [manualHolidays, dataLoaded]);
+  useEffect(() => { if (dataLoaded) saveLocal("ams-holiday-office-state", operatingState); }, [operatingState, dataLoaded]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast((t) => (t === msg ? null : t)), 2800); };
   const requestDelete = (message, onConfirm) => setDeleteRequest({ message, onConfirm });
@@ -588,8 +599,8 @@ function Console({ appName, setAppName, onSignOut }) {
         if (res && res.value && !cancelled) {
           const data = JSON.parse(res.value);
           if (data.appName) setAppName(data.appName);
-          if (data.operatingState) setOperatingState(data.operatingState);
-          if (data.holidays) setHolidays(data.holidays);
+          if (data.operatingState) setOperatingState(readSaved("ams-holiday-office-state", data.operatingState));
+          if (data.holidays) setHolidays(readSaved(MANUAL_KEY, data.holidays));
           if (data.schedules) setSchedules(data.schedules);
           if (data.customers) setCustomers(data.customers);
         }
@@ -641,7 +652,7 @@ function Console({ appName, setAppName, onSignOut }) {
 
   useEffect(() => {
     if (!dataLoaded) return;
-    const payload = { appName, operatingState, holidays, schedules, customers };
+    const payload = { appName, operatingState, holidays: manualHolidays, schedules, customers };
     const t = setTimeout(() => {
       try {
         window.storage.set(STORAGE_KEY, JSON.stringify(payload)).catch(() => {});
@@ -650,7 +661,7 @@ function Console({ appName, setAppName, onSignOut }) {
       }
     }, 500);
     return () => clearTimeout(t);
-  }, [appName, operatingState, holidays, schedules, customers, dataLoaded]);
+  }, [appName, operatingState, manualHolidays, schedules, customers, dataLoaded]);
 
   function resetToSampleData() {
   requestDelete("Reset AMS-FOLLOWUP back to the original sample dataset? This clears everything imported, edited, or deleted — including data saved in Firestore — and cannot be undone.", async () => {
@@ -1025,7 +1036,7 @@ function Console({ appName, setAppName, onSignOut }) {
               existingQuotations={quotations} agents={agents} phones={phones} onCommit={commitImport} />
           )}
           {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
-          {page === "holidays" && <HolidaysPage holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} />}
+          {page === "holidays" && <HolidayCalendar holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} feed={holidayFeed} states={MY_STATES} />}
           {page === "reports" && <ReportsPage allDocs={allDocs} />}
           {page === "settings" && <SettingsPage schedules={schedules} setSchedules={setSchedules} appName={appName} setAppName={setAppName} agents={agents} setAgents={setAgents} phones={phones} setPhones={setPhones} onResetData={resetToSampleData} onSaved={showToast} />}
         </div>
@@ -1814,78 +1825,6 @@ function Timeline({ events, onEditEvent }) {
 }
 
 /* ------------------------------ Holidays page ------------------------------ */
-function HolidaysPage({ holidays, setHolidays, operatingState, setOperatingState, requestDelete }) {
-  const [form, setForm] = useState({ date: "", name: "", state: "All" });
-  const [editingId, setEditingId] = useState(null);
-  const [viewState, setViewState] = useState("All");
-  const sorted = [...holidays].sort((a, b) => a.date.localeCompare(b.date));
-  const visible = viewState === "All" ? sorted : sorted.filter((h) => h.state === "All" || h.state === viewState);
-
-  const addOrUpdate = () => {
-    if (!form.date || !form.name) return;
-    if (editingId) { setHolidays((prev) => prev.map((h) => (h.id === editingId ? { ...h, ...form } : h))); setEditingId(null); }
-    else setHolidays((prev) => [...prev, { id: uid("h"), ...form }]);
-    setForm({ date: "", name: "", state: "All" });
-  };
-  const edit = (h) => { setForm({ date: h.date, name: h.name, state: h.state }); setEditingId(h.id); };
-  const remove = (h) => requestDelete(`Delete "${h.name}" (${fmtDate(h.date)})? This holiday will no longer be excluded from working-day calculations.`, () => setHolidays((prev) => prev.filter((x) => x.id !== h.id)));
-  const restoreDefaults = () => setHolidays((prev) => {
-    const existing = new Set(prev.map((h) => h.date + h.name + h.state));
-    const toAdd = DEFAULT_HOLIDAYS.filter((h) => !existing.has(h.date + h.name + h.state)).map((h) => ({ ...h, id: uid("h") }));
-    return [...prev, ...toAdd];
-  });
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div><h2 className="text-base font-semibold" style={{ color: INK }}>Malaysian Public Holiday Calendar</h2><p className="text-xs" style={{ color: "#9A9AA0" }}>Real 2026 national and state holidays. Working-day follow-up dates skip weekends and every holiday that applies to your operating state.</p></div>
-        <button onClick={restoreDefaults} className="text-xs font-medium px-3 py-2 rounded-lg border flex items-center gap-1.5" style={{ borderColor: LINE, color: "#5C5D63" }}><RefreshCw size={12} /> Restore Full 2026 Calendar</button>
-      </div>
-
-      <div className="rounded-xl border p-4 flex items-center justify-between flex-wrap gap-3" style={{ borderColor: TEAL, background: TEAL_SOFT }}>
-                <div className="flex items-center gap-2 flex-wrap">
-          <Info size={15} style={{ color: TEAL }} />
-          <div className="text-xs" style={{ color: TEAL }}>
-            <div className="font-semibold">Operating State</div>
-            <div>Follow-up dates skip national holidays plus holidays for this state.</div>
-          </div>
-        </div>
-        <select value={operatingState} onChange={(e) => setOperatingState(e.target.value)} className="text-xs font-medium rounded-lg border px-3 py-2 outline-none bg-white" style={{ borderColor: TEAL, color: INK }}>
-          {MY_STATES.filter((s) => s !== "All").map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </div>
-
-      <div className="rounded-xl border bg-white p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end" style={{ borderColor: LINE }}>
-        <div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Date</label><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none" style={{ borderColor: LINE }} /></div>
-        <div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>Holiday Name</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Hari Raya Haji" className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none" style={{ borderColor: LINE }} /></div>
-        <div><label className="text-xs font-medium block mb-1" style={{ color: "#6B6C72" }}>State</label><select value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} className="w-full text-sm rounded-lg border px-2.5 py-2 outline-none bg-white" style={{ borderColor: LINE }}>{MY_STATES.map((s) => <option key={s} value={s}>{s}</option>)}</select></div>
-        <button onClick={addOrUpdate} className="text-xs font-medium px-3 py-2 rounded-lg flex items-center justify-center gap-1.5" style={{ background: INK, color: "white" }}>{editingId ? <Check size={13} /> : <Plus size={13} />} {editingId ? "Update Holiday" : "Add Holiday"}</button>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <div className="text-xs font-medium" style={{ color: "#6B6C72" }}>{visible.length} of {holidays.length} holidays shown</div>
-        <Select value={viewState} onChange={setViewState} options={MY_STATES} label="View" />
-      </div>
-
-      <div className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: LINE }}>
-        <table className="w-full text-sm">
-          <thead><tr className="text-left text-[11px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}><th className="px-5 py-2.5 font-medium">Date</th><th className="px-3 py-2.5 font-medium">Holiday</th><th className="px-3 py-2.5 font-medium">State</th><th className="px-5 py-2.5 font-medium text-right">Actions</th></tr></thead>
-          <tbody>
-            {visible.map((h) => (
-              <tr key={h.id} className="border-t" style={{ borderColor: LINE }}>
-                <td className="px-5 py-3 text-xs" style={{ color: "#5C5D63" }}>{fmtDate(h.date)}</td>
-                <td className="px-3 py-3 font-medium" style={{ color: INK }}>{h.name}</td>
-                <td className="px-3 py-3"><Tag>{h.state}</Tag></td>
-                <td className="px-5 py-3 text-right flex justify-end gap-1.5"><IconBtn icon={Pencil} label="Edit" onClick={() => edit(h)} /><IconBtn icon={Trash2} label="Delete" onClick={() => remove(h)} danger /></td>
-              </tr>
-            ))}
-            {visible.length === 0 && <tr><td colSpan={4} className="px-5 py-8 text-center text-xs" style={{ color: "#9A9AA0" }}>No holidays for this filter.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
 
 /* ------------------------------ Import Data page ------------------------------ */
 function ImportPage({ schedules, holidays, presetType, setPresetType, existingQuotations, agents, phones, onCommit }) {

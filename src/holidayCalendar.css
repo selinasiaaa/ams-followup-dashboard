@@ -1,0 +1,46 @@
+.holiday-calendar { color: #12172b; display: grid; gap: 20px; min-width: 0; }
+.holiday-calendar h2 { font-size: 24px; font-weight: 650; margin: 4px 0; }
+.holiday-calendar h3 { font-size: 18px; font-weight: 600; }
+.holiday-calendar p { font-size: 13px; color: #606674; line-height: 1.6; }
+.holiday-eyebrow { font-size: 10px; letter-spacing: .1em; color: #54716e; font-weight: 700; }
+.holiday-heading, .holiday-office, .holiday-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.holiday-calendar button, .holiday-calendar select, .holiday-calendar input { border: 1px solid #dcdedb; border-radius: 8px; background: white; padding: 9px 12px; font-size: 13px; min-height: 42px; }
+.holiday-calendar button { cursor: pointer; }
+.holiday-calendar button:disabled { opacity: .5; cursor: wait; }
+.holiday-calendar button:hover { background: #edf5f2; }
+.holiday-calendar label { font-size: 11px; font-weight: 600; display: grid; gap: 5px; }
+.holiday-office { padding: 18px; border: 1px solid #b7d9cf; border-radius: 12px; background: #eaf4ef; }
+.holiday-office > div { flex: 1 1 260px; }
+.holiday-feed-status { font-size: 12px; color: #566575; }
+.holiday-feed-status p { font-size: 12px; }
+.holiday-calendar a { color: #0f756e; text-decoration: underline; overflow-wrap: anywhere; }
+.holiday-calendar .holiday-warning { color: #985c13; display: block; font-size: 12px; }
+.holiday-month-nav, .holiday-filters { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+.holiday-month-nav { align-items: center; }
+.holiday-month-nav h3 { min-width: 155px; text-align: center; }
+.holiday-layout { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 18px; align-items: start; }
+.holiday-month { border: 1px solid #dcdedb; border-radius: 14px; overflow: hidden; background: white; }
+.holiday-weekdays, .holiday-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.holiday-weekdays { background: #f4f5f2; }
+.holiday-weekdays span { text-align: center; padding: 14px 0; color: #64706c; font-size: 11px; font-weight: 600; }
+.holiday-calendar .holiday-day { min-height: 112px; border-radius: 0; border: 0; border-top: 1px solid #e7e9e4; border-right: 1px solid #e7e9e4; text-align: left; padding: 8px; display: flex; flex-direction: column; align-items: start; gap: 5px; min-width: 0; position: relative; }
+.holiday-day-number { font-weight: 600; font-size: 12px; }
+.holiday-day-name { font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; color: #216a58; }
+.holiday-calendar .has-holiday { background: #eff8f1; }
+.holiday-calendar .is-selected { box-shadow: inset 0 0 0 2px #0f8a82; background: #e0f1e8; }
+.is-today .holiday-day-number { background: #12172b; color: white; border-radius: 50%; width: 23px; height: 23px; display: grid; place-items: center; }
+.holiday-blank { background: #fafbf8; border-top: 1px solid #e7e9e4; }
+.holiday-dot { display: none; height: 5px; width: 5px; border-radius: 50%; background: #0f8a82; }
+.holiday-month footer { padding: 14px; color: #69736e; font-size: 11px; border-top: 1px solid #e7e9e4; }
+.holiday-detail { border: 1px solid #dcdedb; border-radius: 14px; padding: 18px; background: white; min-width: 0; }
+.holiday-detail h3 { margin: 7px 0; }
+.holiday-event { padding: 15px 0; border-bottom: 1px solid #e7e9e4; overflow-wrap: anywhere; }
+.holiday-event strong { font-size: 14px; }
+.holiday-event a { display: block; font-size: 12px; margin-top: 8px; }
+.holiday-event-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.holiday-calendar .holiday-add { width: 100%; margin-top: 18px; color: #0f756e; }
+.holiday-empty { padding: 22px 0; font-size: 13px; color: #6b7280; }
+.holiday-form { display: grid; gap: 12px; margin-top: 14px; }
+.holiday-form input, .holiday-form select { min-width: 0; width: 100%; }
+@media (max-width: 1150px) { .holiday-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .holiday-calendar h2 { font-size: 21px; } .holiday-filters { width: 100%; } .holiday-filters label { flex: 1 1 100px; min-width: 0; } .holiday-filters select { width: 100%; } .holiday-calendar .holiday-day { min-height: 62px; padding: 7px; } .holiday-day-name { display: none; } .holiday-dot { display: block; } }
