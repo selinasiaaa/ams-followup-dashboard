@@ -119,11 +119,34 @@ function addWorkingDays(startDate, n, holidays, state) {
   }
   return d;
 }
-function computeScheduleDates(docDateStr, stages, holidays, state) {
+function validYMD(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = parseYMD(value);
+  return Number.isNaN(date.getTime()) || ymd(date) !== value ? null : date;
+}
+function completionDatesFor(doc, stages) {
+  const completedCount = Math.min(Number(doc.completedStages) || 0, stages.length);
+  const dates = Array.isArray(doc.completedStageDates) ? [...doc.completedStageDates] : [];
+  for (let index = 0; index < completedCount; index++) {
+    if (validYMD(dates[index])) continue;
+    const stage = stages[index];
+    const completedEvent = [...(doc.history || [])].reverse().find((event) => (
+      validYMD(event?.date) && event.stage === stage.label && String(event.label || "").startsWith("Completed:")
+    ));
+    if (completedEvent) dates[index] = completedEvent.date;
+  }
+  if (completedCount && !validYMD(dates[completedCount - 1]) && validYMD(doc.lastFollowupDate)) {
+    dates[completedCount - 1] = doc.lastFollowupDate;
+  }
+  return dates;
+}
+function computeScheduleDates(docDateStr, stages, holidays, state, completedStageDates = []) {
   let cursor = parseYMD(docDateStr);
   const dates = [];
-  for (const stage of stages) {
-    cursor = addWorkingDays(cursor, stage.workingDaysAfterPrevious, holidays, state);
+  for (let index = 0; index < stages.length; index++) {
+    const plannedDate = addWorkingDays(cursor, stages[index].workingDaysAfterPrevious, holidays, state);
+    const completedDate = validYMD(completedStageDates[index]);
+    cursor = completedDate || plannedDate;
     dates.push(new Date(cursor));
   }
   return dates;
@@ -589,6 +612,16 @@ function Console({ appName, setAppName, onSignOut }) {
   const requestDelete = (message, onConfirm) => setDeleteRequest({ message, onConfirm });
   const confirmDelete = () => { if (deleteRequest) { deleteRequest.onConfirm(); } setDeleteRequest(null); };
   const cancelDelete = () => setDeleteRequest(null);
+  const exportBackup = () => {
+    const backup = { exportedAt: new Date().toISOString(), appName, quotations, customers, agents, phones, schedules, manualHolidays, operatingState };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `ams-followup-backup-${ymd(new Date())}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast("Backup download started.");
+  };
 
   // ---- Load dashboard configuration and Firestore collections once on mount ----
   useEffect(() => {
@@ -693,14 +726,15 @@ function Console({ appName, setAppName, onSignOut }) {
 
   const deriveDoc = (doc, docType) => {
     const stages = schedules.quotation;
-    const dates = computeScheduleDates(doc.date, stages, holidays, operatingState);
+    const completedStageDates = completionDatesFor(doc, stages);
+    const dates = computeScheduleDates(doc.date, stages, holidays, operatingState, completedStageDates);
     const totalStages = stages.length;
     const idx = doc.completedStages;
     const scheduledNext = idx < totalStages ? dates[idx] : null;
     const nextDate = doc.rescheduleDate ? parseYMD(doc.rescheduleDate) : scheduledNext;
     const currentStage = idx < totalStages ? stages[idx] : null;
     const daysSince = diffCalendarDays(TODAY, parseYMD(doc.date));
-    const lastFollowupDate = doc.lastFollowupDate || (idx > 0 ? ymd(dates[idx - 1]) : null);
+    const lastFollowupDate = completedStageDates[idx - 1] || doc.lastFollowupDate || (idx > 0 ? ymd(dates[idx - 1]) : null);
     const manualStatus = normalizeManualStatus(doc.manualStatus);
     const lastAction = (doc.history || []).slice(-1)[0]?.label || manualStatus || "—";
 
@@ -726,6 +760,7 @@ function Console({ appName, setAppName, onSignOut }) {
       stages,
       dates,
       totalStages,
+      completedStageDates,
       idx,
       nextDate,
       currentStage,
@@ -745,6 +780,15 @@ function Console({ appName, setAppName, onSignOut }) {
     () => (activeFollowupId ? allQuotations.find((d) => d.id === activeFollowupId) || null : null),
     [activeFollowupId, allQuotations]
   );
+  useEffect(() => {
+    if (!dataLoaded || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const due = allDocs.filter((doc) => doc.status === "Due Today" || doc.status === "Overdue");
+    if (!due.length) return;
+    const key = `ams-reminder-${ymd(TODAY)}-${due.map((doc) => doc.id).sort().join("-")}`;
+    if (localStorage.getItem(key)) return;
+    new Notification("AMS Follow-up reminder", { body: `${due.length} follow-up${due.length !== 1 ? "s are" : " is"} due or overdue.` });
+    localStorage.setItem(key, "sent");
+  }, [allDocs, dataLoaded]);
 
   if (!dataLoaded) return <LoadingScreen label="Loading your data…" />;
 
@@ -821,6 +865,11 @@ function Console({ appName, setAppName, onSignOut }) {
         assignedAgent: params?.agentName || d.assignedAgent || d.staff || "",
         sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
         completedStages: act === "Completed" ? Math.min((d.completedStages || 0) + 1, stages.length) : d.completedStages,
+        completedStageDates: act === "Completed" ? (() => {
+          const dates = Array.isArray(d.completedStageDates) ? [...d.completedStageDates] : [];
+          dates[Math.min(d.completedStages || 0, stages.length - 1)] = ymd(TODAY);
+          return dates;
+        })() : d.completedStageDates,
         rescheduleDate: act === "Completed" ? null : act === "Rescheduled" ? params?.rescheduleDate : d.rescheduleDate,
         manualStatus: act === "Completed"
           ? null
@@ -887,6 +936,33 @@ function Console({ appName, setAppName, onSignOut }) {
       if (detailDoc && docs.some((d) => d.id === detailDoc.id)) setDetailDoc(null);
       showToast(`${docs.length} record${docs.length !== 1 ? "s" : ""} deleted.`);
     });
+  }
+  async function bulkUpdateDocs(docs, action, value) {
+    if (!docs.length) return;
+    const today = ymd(TODAY);
+    const updates = docs.map((doc) => {
+      const current = quotations.find((item) => item.id === doc.id) || doc;
+      let next = { ...current };
+      if (action === "assign") next.assignedAgent = value;
+      if (action === "reschedule") {
+        next.rescheduleDate = value;
+        next.manualStatus = null;
+        next.history = trimHistoryEvents([...(current.history || []), { date: today, stage: "Follow-up", label: `Follow-up rescheduled to ${fmtDate(value)}`, note: `Bulk rescheduled to ${fmtDate(value)}.` }], MAX_HISTORY_EVENTS);
+      }
+      if (action === "no-response") {
+        next.manualStatus = "No Response";
+        next.history = trimHistoryEvents([...(current.history || []), { date: today, stage: "Follow-up", label: "Follow-up", note: "No response from customer (bulk action)." }], MAX_HISTORY_EVENTS);
+      }
+      return next;
+    });
+    setQuotations((prev) => prev.map((record) => updates.find((item) => item.id === record.id) || record));
+    try {
+      await Promise.all(updates.map((record) => quotationStore.update(record.id, record)));
+      showToast(`${updates.length} record${updates.length !== 1 ? "s" : ""} updated.`);
+    } catch (error) {
+      console.error("[Firestore] Bulk follow-up update failed", error);
+      showToast("Some bulk changes could not be saved. Please refresh and check the records.");
+    }
   }
   function deleteCustomer(customer) {
     requestDelete(`Delete customer record "${customer.company}"? This only removes the imported customer master record, not any quotations.`, () => {
@@ -1035,10 +1111,10 @@ function Console({ appName, setAppName, onSignOut }) {
             <ImportPage schedules={schedules} holidays={holidays} presetType={importPresetType} setPresetType={setImportPresetType}
               existingQuotations={quotations} agents={agents} phones={phones} onCommit={commitImport} />
           )}
-          {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
+          {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} onBulkAction={bulkUpdateDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
           {page === "holidays" && <HolidayCalendar holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} feed={holidayFeed} states={MY_STATES} />}
           {page === "reports" && <ReportsPage allDocs={allDocs} />}
-          {page === "settings" && <SettingsPage schedules={schedules} setSchedules={setSchedules} appName={appName} setAppName={setAppName} agents={agents} setAgents={setAgents} phones={phones} setPhones={setPhones} onResetData={resetToSampleData} onSaved={showToast} />}
+          {page === "settings" && <SettingsPage schedules={schedules} setSchedules={setSchedules} appName={appName} setAppName={setAppName} agents={agents} setAgents={setAgents} phones={phones} setPhones={setPhones} onResetData={resetToSampleData} onSaved={showToast} onExportBackup={exportBackup} />}
         </div>
       </main>
 
@@ -1318,11 +1394,13 @@ const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "Ju
 /* ------------------------------ Doc list page ------------------------------ */
 const EMPTY_FILTERS = { search: "", category: "All", status: "All", agent: "All", year: "All", month: "All" };
 
-function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onOpenDetail, onDeleteDoc, onBulkDelete, initialFilters, clearInitialFilters }) {
+function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onOpenDetail, onDeleteDoc, onBulkDelete, onBulkAction, initialFilters, clearInitialFilters }) {
   const [draft, setDraft] = useState(EMPTY_FILTERS);
   const [applied, setApplied] = useState(EMPTY_FILTERS);
   const [selectedKeys, setSelectedKeys] = useState(new Set());
   const [sortBy, setSortBy] = useState("Date");
+  const [bulkAction, setBulkAction] = useState("assign");
+  const [bulkValue, setBulkValue] = useState("");
 
   const years = Array.from(new Set(docs.map((d) => parseYMD(d.date).getFullYear()))).sort((a, b) => b - a);
 
@@ -1400,9 +1478,13 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
       </div>
 
       {selectedKeys.size > 0 && onBulkDelete && (
-        <div className="rounded-xl border px-4 py-2.5 flex items-center justify-between" style={{ borderColor: RED, background: RED_SOFT }}>
-          <span className="text-xs font-medium" style={{ color: RED }}>{selectedKeys.size} selected</span>
-          <div className="flex items-center gap-2">
+        <div className="rounded-xl border px-4 py-2.5 flex flex-col lg:flex-row lg:items-center justify-between gap-2" style={{ borderColor: LINE, background: "#FBFAF7" }}>
+          <span className="text-xs font-medium" style={{ color: INK }}>{selectedKeys.size} selected</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={bulkAction} onChange={(e) => { setBulkAction(e.target.value); setBulkValue(""); }} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="assign">Assign agent</option><option value="reschedule">Reschedule</option><option value="no-response">Mark no response</option></select>
+            {bulkAction === "assign" && <select value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }}><option value="">Choose agent</option>{agents.filter((a) => a.active).map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}</select>}
+            {bulkAction === "reschedule" && <input type="date" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="text-xs rounded-md border px-2 py-1.5 bg-white" style={{ borderColor: LINE }} />}
+            <button disabled={(bulkAction !== "no-response" && !bulkValue)} onClick={() => { onBulkAction(selectedDocs, bulkAction, bulkValue); setSelectedKeys(new Set()); setBulkValue(""); }} className="text-xs font-medium px-3 py-1.5 rounded-lg" style={(bulkAction !== "no-response" && !bulkValue) ? { background: "#D5D5D0", color: "white" } : { background: TEAL, color: "white" }}>Apply</button>
             <button onClick={() => setSelectedKeys(new Set())} className="text-xs font-medium px-2 py-1 rounded-md" style={{ color: "#8A3B3B" }}>Clear</button>
             <button onClick={() => { onBulkDelete(selectedDocs); setSelectedKeys(new Set()); }} className="text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-1.5" style={{ background: RED, color: "white" }}>
               <Trash2 size={13} /> Delete Selected
@@ -2023,6 +2105,20 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
     if (/^\s*(?:n\/a|na|unknown)\b/i.test(s)) return true;
     return false;
   };
+  const duplicateChanges = (incoming) => {
+    const existing = existingList.find((record) => String(record.docNo || "").trim().toLowerCase() === String(incoming.docNo || "").trim().toLowerCase());
+    if (!existing) return [];
+    const fieldsToCompare = [
+      ["Document date", existing.date || existing.docDate, incoming.date],
+      ["Company", existing.company || existing.companyName, incoming.company],
+      ["Person in charge", existing.contactName || existing.personInCharge, incoming.contactName],
+      ["Phone", existing.phone, incoming.phone],
+      ["Email", existing.email, incoming.email],
+      ["Category", existing.category, incoming.category],
+      ["Amount", Number(existing.amount ?? existing.totalAmount ?? 0).toFixed(2), Number(incoming.amount ?? 0).toFixed(2)],
+    ];
+    return fieldsToCompare.filter(([, oldValue, newValue]) => String(oldValue || "") !== String(newValue || ""));
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -2217,12 +2313,12 @@ function ImportPage({ schedules, holidays, presetType, setPresetType, existingQu
                 </div>
               </div>
               <table className="w-full text-xs">
-                <thead><tr className="text-left" style={{ color: "#9A9AA0" }}><th className="px-4 py-2 font-medium">{keyLabel}</th>{!isCustomer && <th className="px-3 py-2 font-medium">Company</th>}<th className="px-3 py-2 font-medium">Resolution</th></tr></thead>
+                <thead><tr className="text-left" style={{ color: "#9A9AA0" }}><th className="px-4 py-2 font-medium">{keyLabel}</th>{!isCustomer && <th className="px-3 py-2 font-medium">Company / changes if updated</th>}<th className="px-3 py-2 font-medium">Resolution</th></tr></thead>
                 <tbody>
                   {duplicates.map((d) => (
                     <tr key={d.keyValue} className="border-t" style={{ borderColor: LINE }}>
                       <td className="px-4 py-2 font-mono" style={{ color: INK }}>{isCustomer ? d.company : d.docNo}</td>
-                      {!isCustomer && <td className="px-3 py-2" style={{ color: "#5C5D63" }}>{d.company}</td>}
+                      {!isCustomer && <td className="px-3 py-2" style={{ color: "#5C5D63" }}><div>{d.company}</div>{duplicateChanges(d).length > 0 ? <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[10px]" style={{ color: AMBER }}>{duplicateChanges(d).map(([label, oldValue, newValue]) => <span key={label}><strong>{label}:</strong> {String(oldValue || "—")} → {String(newValue || "—")}</span>)}</div> : <div className="mt-1 text-[10px]" style={{ color: "#9A9AA0" }}>No source-field changes detected.</div>}</td>}
                       <td className="px-3 py-2">
                         <select value={resolutions[d.keyValue] || "skip"} onChange={(e) => setResolutions({ ...resolutions, [d.keyValue]: e.target.value })} className="text-xs rounded-md border px-2 py-1 outline-none bg-white" style={{ borderColor: LINE }}>
                           <option value="skip">Skip (default)</option>
@@ -2337,10 +2433,26 @@ function ReportsPage({ allDocs }) {
   const [year, setYear] = useState(years.length ? String(years[years.length - 1]) : String(TODAY.getFullYear()));
   const byYear = years.map((y) => ({ name: String(y), value: allDocs.filter((d) => parseYMD(d.date).getFullYear() === y).length }));
   const byMonth = MONTH_NAMES.map((m, i) => ({ name: m.slice(0, 3), value: allDocs.filter((d) => { const dt = parseYMD(d.date); return String(dt.getFullYear()) === year && dt.getMonth() === i; }).length }));
+  const outcomes = allDocs.filter((d) => ["Success", "Lost"].includes(d.status));
+  const conversionRate = outcomes.length ? Math.round((outcomes.filter((d) => d.status === "Success").length / outcomes.length) * 100) : 0;
+  const active = allDocs.filter((d) => !["Success", "Lost", "Completed"].includes(d.status));
+  const overdueRate = active.length ? Math.round((active.filter((d) => d.status === "Overdue").length / active.length) * 100) : 0;
+  const firstFollowupDays = allDocs.map((d) => {
+    const event = (d.history || []).find((h) => String(h.label || "").startsWith("Completed:"));
+    return event?.date ? Math.max(0, diffCalendarDays(parseYMD(event.date), parseYMD(d.date))) : null;
+  }).filter((value) => value !== null);
+  const averageFirstFollowup = firstFollowupDays.length ? (firstFollowupDays.reduce((sum, value) => sum + value, 0) / firstFollowupDays.length).toFixed(1) : "—";
+  const agentOutcomeValue = Array.from(new Set(allDocs.map((d) => d.assignedAgent || d.staff || "Unassigned"))).map((agent) => ({ name: agent, Success: allDocs.filter((d) => (d.assignedAgent || d.staff || "Unassigned") === agent && d.status === "Success").reduce((sum, d) => sum + Number(d.amount || 0), 0), Lost: allDocs.filter((d) => (d.assignedAgent || d.staff || "Unassigned") === agent && d.status === "Lost").reduce((sum, d) => sum + Number(d.amount || 0), 0) }));
 
   return (
     <div className="flex flex-col gap-4">
       <h2 className="text-base font-semibold" style={{ color: INK }}>Reports</h2>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <MetricCard label="Conversion rate" value={`${conversionRate}%`} hint="Success ÷ decided outcomes" tint={GREEN} />
+        <MetricCard label="Overdue rate" value={`${overdueRate}%`} hint="Overdue ÷ active follow-ups" tint={RED} />
+        <MetricCard label="Avg. first follow-up" value={averageFirstFollowup === "—" ? "—" : `${averageFirstFollowup} days`} hint="From quotation to first completion" tint={TEAL} />
+        <MetricCard label="Decided quotations" value={outcomes.length} hint={`${outcomes.filter((d) => d.status === "Success").length} success · ${outcomes.filter((d) => d.status === "Lost").length} lost`} tint={BLUE} />
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <ChartCard title="Follow-ups by Status">
           <ResponsiveContainer width="100%" height={240}>
@@ -2374,6 +2486,11 @@ function ReportsPage({ allDocs }) {
             <BarChart data={byMonth}><CartesianGrid strokeDasharray="3 3" stroke={LINE} vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} /><Tooltip /><Bar dataKey="value" fill={TEAL} radius={[6, 6, 0, 0]} barSize={20} /></BarChart>
           </ResponsiveContainer>
         </ChartCard>
+        <ChartCard title="Success and Lost Value by Agent">
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={agentOutcomeValue}><CartesianGrid strokeDasharray="3 3" stroke={LINE} vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><Tooltip formatter={(value) => `RM ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2 })}`} /><Legend wrapperStyle={{ fontSize: 11 }} /><Bar dataKey="Success" stackId="outcome" fill={GREEN} radius={[4, 4, 0, 0]} /><Bar dataKey="Lost" stackId="outcome" fill={GRAY} radius={[4, 4, 0, 0]} /></BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
       </div>
     </div>
   );
@@ -2391,9 +2508,16 @@ function ChartCard({ title, children, action }) {
 }
 
 /* ------------------------------ Settings page ------------------------------ */
-function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, setAgents, phones, setPhones, onResetData, onSaved }) {
+function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, setAgents, phones, setPhones, onResetData, onSaved, onExportBackup }) {
   const [nameDraft, setNameDraft] = useState(appName);
   const [saved, setSaved] = useState(false);
+  const [notificationState, setNotificationState] = useState(() => typeof Notification === "undefined" ? "unsupported" : Notification.permission);
+  const enableBrowserReminders = async () => {
+    if (typeof Notification === "undefined") { onSaved("Browser notifications are not supported on this device."); return; }
+    const permission = await Notification.requestPermission();
+    setNotificationState(permission);
+    onSaved(permission === "granted" ? "Browser reminders enabled. Keep this dashboard open to receive them." : "Browser reminders were not enabled.");
+  };
   const update = (docKey, stageId, field, value) => setSchedules((prev) => ({ ...prev, [docKey]: prev[docKey].map((s) => (s.id === stageId ? { ...s, [field]: field === "workingDaysAfterPrevious" ? Number(value) : value } : s)) }));
   const saveName = () => { setAppName(nameDraft.trim() || DEFAULT_APP_NAME); setSaved(true); setTimeout(() => setSaved(false), 1500); };
   const addAgent = () => {
@@ -2488,6 +2612,20 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
         Working days exclude Saturdays, Sundays, and every date listed in the Holiday Calendar. Stage dates are cumulative — each stage's gap is counted from the previous stage (or the document date for Stage 1).
       </div>
 
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="rounded-xl border bg-white p-4 flex flex-col gap-2" style={{ borderColor: LINE }}>
+          <div className="text-sm font-semibold" style={{ color: INK }}>Browser reminders</div>
+          <p className="text-xs" style={{ color: "#5C5D63" }}>Enable alerts on this computer for follow-ups due or overdue while the dashboard is open.</p>
+          <button onClick={enableBrowserReminders} className="self-start text-xs font-medium px-3 py-2 rounded-lg" style={{ background: notificationState === "granted" ? GREEN : INK, color: "white" }}>{notificationState === "granted" ? "Browser reminders enabled" : "Enable browser reminders"}</button>
+          <p className="text-[10px]" style={{ color: "#9A9AA0" }}>Email and WhatsApp delivery need your company mail/WhatsApp provider credentials before they can be enabled safely.</p>
+        </div>
+        <div className="rounded-xl border bg-white p-4 flex flex-col gap-2" style={{ borderColor: LINE }}>
+          <div className="text-sm font-semibold" style={{ color: INK }}>Backup & recovery</div>
+          <p className="text-xs" style={{ color: "#5C5D63" }}>Download a complete JSON backup of quotations, histories, settings, agents, phones, and holidays before major changes.</p>
+          <button onClick={onExportBackup} className="self-start text-xs font-medium px-3 py-2 rounded-lg" style={{ background: TEAL, color: "white" }}>Download backup</button>
+        </div>
+      </div>
+
       <div>
         <h3 className="text-sm font-semibold mb-1" style={{ color: INK }}>Data Storage</h3>
         <p className="text-xs mb-2" style={{ color: "#9A9AA0" }}>Quotations, customers, templates, holidays, and schedules are saved automatically as you work, and are still here the next time you sign in.</p>
@@ -2502,4 +2640,7 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
       </div>
     </div>
   );
+}
+function MetricCard({ label, value, hint, tint }) {
+  return <div className="rounded-xl border bg-white p-3.5" style={{ borderColor: LINE }}><div className="text-[10px] uppercase tracking-wide" style={{ color: "#9A9AA0" }}>{label}</div><div className="text-xl font-semibold mt-1" style={{ color: tint }}>{value}</div><div className="text-[10px] mt-1" style={{ color: "#9A9AA0" }}>{hint}</div></div>;
 }

@@ -1,5 +1,23 @@
 # React + Vite
 
+## Firestore protection
+
+`firestore.rules` is a ready-to-deploy baseline: signed-in staff can read and update quotations, while an administrator profile in `users/{uid}` is required to delete records and manage agents/phones. It has **not** been deployed automatically, so existing users and records remain untouched.
+
+Before deploying, create an administrator document for the Firebase user who manages the dashboard:
+
+```json
+{ "role": "admin" }
+```
+
+Then deploy from a machine logged in to the correct Firebase project:
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+Use **Settings → Download backup** before deploying rules or making major data changes.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
