@@ -1680,21 +1680,23 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
           )} 
         </div>
         {customerResponseOpen && (
-          <div className="fixed inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(18,23,43,0.45)" }}>
-            <div className="bg-white rounded-lg p-4 w-full max-w-md">
+          <div className="fixed inset-0 z-40 flex items-center justify-center p-4" style={{ background: "rgba(18,23,43,0.45)" }}>
+            <div className="bg-white rounded-lg p-4 w-full max-w-xl max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-2"><div className="text-sm font-semibold">Customer has responded</div><button onClick={() => setCustomerResponseOpen(false)}><X size={16} /></button></div>
               <div className="text-xs mb-2" style={{ color: "#6B6C72" }}>Please record the customer's response below.</div>
               <label className="text-xs font-medium mb-1" style={{ color: "#6B6C72" }}>Remark:</label>
               <textarea value={customerRemark} onChange={(e) => setCustomerRemark(e.target.value)} rows={4} className="w-full rounded-md border p-2 mb-3" style={{ borderColor: LINE }} />
-              <div className="flex justify-end gap-2">
-                <button onClick={() => setCustomerResponseOpen(false)} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
-                <button onClick={() => confirmCustomerResponse()} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Save Remark Only</button>
-                <div className="flex items-center gap-2">
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                   <button onClick={() => confirmCustomerResponse("No Response")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: NO_RESPONSE_SOFT, color: NO_RESPONSE, borderColor: NO_RESPONSE }}>No Response</button>
                   <button onClick={() => confirmCustomerResponse("Follow Up Later")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: VIOLET_SOFT, color: VIOLET, borderColor: VIOLET }}>Follow Up Later</button>
                   <button onClick={() => { setRemarkPendingReschedule(true); setCustomerResponseOpen(false); setReschedulingOpen(true); }} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: BLUE_SOFT, color: BLUE, borderColor: BLUE }}>Reschedule</button>
-                    <button onClick={() => confirmCustomerResponse("Success")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GREEN_SOFT, color: GREEN, borderColor: GREEN }}>Success</button>
+                  <button onClick={() => confirmCustomerResponse("Success")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GREEN_SOFT, color: GREEN, borderColor: GREEN }}>Success</button>
                   <button onClick={() => confirmCustomerResponse("Lost")} className="text-xs font-medium px-3 py-2 rounded-lg" style={{ background: GRAY_SOFT, color: GRAY, borderColor: GRAY }}>Lost</button>
+                </div>
+                <div className="flex flex-wrap justify-end gap-2 border-t pt-3" style={{ borderColor: LINE }}>
+                  <button onClick={() => setCustomerResponseOpen(false)} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Cancel</button>
+                  <button onClick={() => confirmCustomerResponse()} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: "#5C5D63" }}>Save Remark Only</button>
                 </div>
               </div>
             </div>
