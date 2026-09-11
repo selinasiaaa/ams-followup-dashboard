@@ -119,6 +119,15 @@ function addWorkingDays(startDate, n, holidays, state) {
   }
   return d;
 }
+function nextWorkingDay(date, holidays, state) {
+  const d = new Date(date);
+  while (!isWorkingDay(d, holidays, state)) d.setDate(d.getDate() + 1);
+  return d;
+}
+function normalizedFollowupYMD(value, holidays, state) {
+  const date = validYMD(value);
+  return date ? ymd(nextWorkingDay(date, holidays, state)) : null;
+}
 function validYMD(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const date = parseYMD(value);
@@ -731,7 +740,9 @@ function Console({ appName, setAppName, onSignOut }) {
     const totalStages = stages.length;
     const idx = doc.completedStages;
     const scheduledNext = idx < totalStages ? dates[idx] : null;
-    const nextDate = doc.rescheduleDate ? parseYMD(doc.rescheduleDate) : scheduledNext;
+    // Older records may contain a manual weekend/holiday override. Display it on
+    // the next working day without changing the stored record or its history.
+    const nextDate = doc.rescheduleDate ? nextWorkingDay(parseYMD(doc.rescheduleDate), holidays, operatingState) : scheduledNext;
     const currentStage = idx < totalStages ? stages[idx] : null;
     const daysSince = diffCalendarDays(TODAY, parseYMD(doc.date));
     const lastFollowupDate = completedStageDates[idx - 1] || doc.lastFollowupDate || (idx > 0 ? ymd(dates[idx - 1]) : null);
@@ -870,7 +881,7 @@ function Console({ appName, setAppName, onSignOut }) {
           dates[Math.min(d.completedStages || 0, stages.length - 1)] = ymd(TODAY);
           return dates;
         })() : d.completedStageDates,
-        rescheduleDate: act === "Completed" ? null : act === "Rescheduled" ? params?.rescheduleDate : d.rescheduleDate,
+        rescheduleDate: act === "Completed" ? null : act === "Rescheduled" ? normalizedFollowupYMD(params?.rescheduleDate, holidays, operatingState) : d.rescheduleDate,
         manualStatus: act === "Completed"
           ? null
           : act === "Follow Up Later"
@@ -882,6 +893,13 @@ function Console({ appName, setAppName, onSignOut }) {
       };
 
       if (act === "Completed") updated.lastFollowupDate = ymd(TODAY);
+      if (act === "Rescheduled") {
+        const requested = params?.rescheduleDate;
+        const actual = updated.rescheduleDate;
+        if (requested && actual && requested !== actual) {
+          updated.history[updated.history.length - 1] = { ...updated.history[updated.history.length - 1], label: `Follow-up rescheduled to ${fmtDate(actual)}`, note: `Requested ${fmtDate(requested)}; moved to the next working day, ${fmtDate(actual)}.` };
+        }
+      }
       if (act === "No Response") updated.manualStatus = "No Response";
       if (act === "Success") updated.manualStatus = "Success";
       if (act === "Lost") updated.manualStatus = "Lost";
@@ -945,9 +963,10 @@ function Console({ appName, setAppName, onSignOut }) {
       let next = { ...current };
       if (action === "assign") next.assignedAgent = value;
       if (action === "reschedule") {
-        next.rescheduleDate = value;
+        next.rescheduleDate = normalizedFollowupYMD(value, holidays, operatingState);
         next.manualStatus = null;
-        next.history = trimHistoryEvents([...(current.history || []), { date: today, stage: "Follow-up", label: `Follow-up rescheduled to ${fmtDate(value)}`, note: `Bulk rescheduled to ${fmtDate(value)}.` }], MAX_HISTORY_EVENTS);
+        const actualDate = next.rescheduleDate;
+        next.history = trimHistoryEvents([...(current.history || []), { date: today, stage: "Follow-up", label: `Follow-up rescheduled to ${fmtDate(actualDate)}`, note: actualDate === value ? `Bulk rescheduled to ${fmtDate(actualDate)}.` : `Bulk requested ${fmtDate(value)}; moved to the next working day, ${fmtDate(actualDate)}.` }], MAX_HISTORY_EVENTS);
       }
       if (action === "no-response") {
         next.manualStatus = "No Response";
