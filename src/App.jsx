@@ -2719,13 +2719,19 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
 }
 function StatusCheckboxFilter({ value, onChange, statuses }) {
   const selected = Array.isArray(value) ? value : value && value !== "All" ? [value] : [];
+  const [open, setOpen] = useState(false);
   const toggle = (status) => onChange(selected.includes(status) ? selected.filter((item) => item !== status) : [...selected, status]);
   return (
-    <div className="rounded-lg border bg-white px-3 py-2" style={{ borderColor: LINE }}>
-      <div className="flex items-center justify-between gap-3 mb-1.5"><span className="text-xs font-medium" style={{ color: INK }}>Status</span>{selected.length > 0 && <button onClick={() => onChange([])} className="text-[11px]" style={{ color: TEAL }}>Clear</button>}</div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1.5">
-        {statuses.map((status) => <label key={status} className="inline-flex items-center gap-1.5 text-[11px] cursor-pointer" style={{ color: "#5C5D63" }}><input type="checkbox" checked={selected.includes(status)} onChange={() => toggle(status)} />{status}</label>)}
-      </div>
+    <div className="relative">
+      <button type="button" onClick={() => setOpen((isOpen) => !isOpen)} className="flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-lg border bg-white" style={{ borderColor: LINE, color: INK }}>
+        Status{selected.length ? `: ${selected.length} selected` : ": All"}<ChevronDown size={13} style={{ transform: open ? "rotate(180deg)" : undefined }} />
+      </button>
+      {open && <div className="absolute z-20 mt-1 w-56 rounded-lg border bg-white shadow-lg p-2" style={{ borderColor: LINE }}>
+        <div className="flex items-center justify-between px-1 pb-2 border-b" style={{ borderColor: LINE }}><span className="text-xs font-semibold" style={{ color: INK }}>Choose statuses</span>{selected.length > 0 && <button type="button" onClick={() => onChange([])} className="text-[11px]" style={{ color: TEAL }}>Clear</button>}</div>
+        <div className="flex flex-col py-1">
+          {statuses.map((status) => <label key={status} className="flex items-center gap-2 px-1.5 py-1.5 text-xs cursor-pointer rounded hover:bg-[#FBFAF7]" style={{ color: "#5C5D63" }}><input type="checkbox" checked={selected.includes(status)} onChange={() => toggle(status)} />{status}</label>)}
+        </div>
+      </div>}
     </div>
   );
 }
