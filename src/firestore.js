@@ -65,6 +65,7 @@ const quotationFields = (record = {}) => {
   includeIfPresent("manualStatus", (value) => normalizeManualStatus(value));
   includeIfPresent("category", (value) => value ?? "");
   includeIfPresent("history", (value) => Array.isArray(value) ? value : []);
+  includeIfPresent("notes", (value) => value ?? "");
   includeIfPresent("completedStageDates", (value) => Array.isArray(value) ? value : []);
   includeIfPresent("sendingPhoneId", (value) => value ?? null);
   includeIfPresent("source", (value) => value ?? "");

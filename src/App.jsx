@@ -822,6 +822,36 @@ function Console({ appName, setAppName, onSignOut }) {
     const currentDoc = quotations.find((item) => item.id === doc.id) || doc;
     const stages = schedules.quotation;
     const stageInfo = stages[currentDoc.completedStages] || null;
+    if (action === "UpdateAssignment") {
+      const updated = {
+        ...currentDoc,
+        assignedAgent: extra?.agentName || "",
+        sendingPhoneId: extra?.phoneId || null,
+      };
+      setQuotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      try {
+        await quotationStore.update(updated.id, updated);
+        showToast("Agent and sending phone saved.");
+        return true;
+      } catch (error) {
+        console.error("[Firestore] Assignment update failed", error);
+        showToast("Could not save the agent and sending phone. Please try again.");
+        return false;
+      }
+    }
+    if (action === "UpdateRemark") {
+      const updated = { ...currentDoc, notes: extra?.remark || "" };
+      setQuotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      try {
+        await quotationStore.update(updated.id, updated);
+        showToast("Follow-up remark saved.");
+        return true;
+      } catch (error) {
+        console.error("[Firestore] Follow-up remark update failed", error);
+        showToast("Could not save the follow-up remark. Please try again.");
+        return false;
+      }
+    }
     if (action === "EditHistory") {
       const idx = extra?.index;
       const newNote = extra?.newNote;
@@ -1693,7 +1723,25 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
   const [editingHistoryOpen, setEditingHistoryOpen] = useState(false);
   const [editingHistoryIndex, setEditingHistoryIndex] = useState(null);
   const [editingHistoryNote, setEditingHistoryNote] = useState("");
+  const [assignmentSaved, setAssignmentSaved] = useState(false);
+  const [followupRemark, setFollowupRemark] = useState(doc.notes || "");
+  const [remarkSaved, setRemarkSaved] = useState(false);
   const submitAction = (action) => onAction(action, { agentName, phoneId });
+  const assignmentChanged = agentName !== (doc.assignedAgent || doc.staff || "") || phoneId !== (doc.sendingPhoneId || "");
+  const saveAssignment = async () => {
+    const saved = await onAction("UpdateAssignment", { agentName, phoneId });
+    if (saved) {
+      setAssignmentSaved(true);
+      setTimeout(() => setAssignmentSaved(false), 1800);
+    }
+  };
+  const saveFollowupRemark = async () => {
+    const saved = await onAction("UpdateRemark", { remark: followupRemark });
+    if (saved) {
+      setRemarkSaved(true);
+      setTimeout(() => setRemarkSaved(false), 1800);
+    }
+  };
   const confirmReschedule = () => {
     if (!rescheduleDate) return;
     if (remarkPendingReschedule) {
@@ -1745,6 +1793,15 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
             } />
             <Field label="Schedule Status" custom={<StatusPill status={doc.status} />} />
           </div>
+          <div className="flex items-center justify-between rounded-lg border px-3 py-2.5" style={{ borderColor: LINE, background: "#FBFAF7" }}>
+            <span className="text-[11px]" style={{ color: "#6B6C72" }}>Changing assignment does not affect the follow-up stage or timeline.</span>
+            <button onClick={saveAssignment} disabled={!assignmentChanged} className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg" style={!assignmentChanged ? { background: "#D5D5D0", color: "white", cursor: "not-allowed" } : { background: assignmentSaved ? GREEN : TEAL, color: "white" }}><Save size={12} className="inline mr-1" />{assignmentSaved ? "Saved" : "Save Assignment"}</button>
+          </div>
+          <div className="rounded-lg border p-3" style={{ borderColor: LINE }}>
+            <div className="flex items-center justify-between gap-2 mb-1.5"><label className="text-xs font-semibold" style={{ color: INK }}>Follow-up Remark</label><span className="text-[10px]" style={{ color: "#9A9AA0" }}>Saved separately from the timeline</span></div>
+            <textarea value={followupRemark} onChange={(e) => setFollowupRemark(e.target.value)} rows={3} maxLength={2000} placeholder="Add an internal remark for this quotation…" className="w-full text-xs rounded-md border p-2 outline-none" style={{ borderColor: LINE }} />
+            <div className="flex justify-end mt-2"><button onClick={saveFollowupRemark} disabled={followupRemark === (doc.notes || "")} className="text-xs font-medium px-3 py-1.5 rounded-lg" style={followupRemark === (doc.notes || "") ? { background: "#D5D5D0", color: "white", cursor: "not-allowed" } : { background: remarkSaved ? GREEN : INK, color: "white" }}><Save size={12} className="inline mr-1" />{remarkSaved ? "Saved" : "Save Remark"}</button></div>
+          </div>
           {reschedulingOpen && (
             <div className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: BLUE, background: BLUE_SOFT }}>
               <div className="text-xs font-semibold" style={{ color: BLUE }}>Pick a new follow-up date</div>
@@ -1760,7 +1817,6 @@ function FollowupPanel({ doc, agents, phones, onClose, onAction }) {
             <Info size={12} className="mt-0.5 shrink-0" />
             Source data (customer, amount, date) comes from SQL Accounting. This action only updates follow-up progress, never the imported document.
           </div>
-          {doc.notes && <div className="text-xs rounded-lg border p-3" style={{ borderColor: LINE }}><span className="font-semibold block mb-1" style={{ color: INK }}>Notes</span><span style={{ color: "#5C5D63" }}>{doc.notes}</span></div>}
           <div>
             <div className="text-xs font-semibold mb-2" style={{ color: "#9A9AA0" }}>Follow-up Timeline</div>
             <div className="rounded-lg border p-3" style={{ borderColor: LINE }}>
