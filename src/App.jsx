@@ -458,13 +458,13 @@ function ActionPill({ action }) {
     </span>
   );
 }
-function StatCard({ label, value, tint, sub }) {
+function StatCard({ label, value, tint, sub, onClick }) {
   return (
-    <div className="rounded-xl border p-4 flex flex-col gap-1 bg-white" style={{ borderColor: LINE }}>
+    <button type="button" onClick={onClick} className="rounded-xl border p-4 flex flex-col gap-1 bg-white text-left transition-colors" style={{ borderColor: LINE, cursor: onClick ? "pointer" : "default" }} onMouseEnter={(e) => { if (onClick) e.currentTarget.style.background = "#FBFAF7"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "white"; }}>
       <span className="text-xs font-medium uppercase tracking-wide" style={{ color: "#8B8C92" }}>{label}</span>
       <span className="text-2xl font-semibold" style={{ color: tint || INK }}>{value}</span>
       {sub && <span className="text-xs" style={{ color: "#9A9AA0" }}>{sub}</span>}
-    </div>
+    </button>
   );
 }
 function NavItem({ icon: Icon, label, active, onClick, count }) {
@@ -1154,7 +1154,7 @@ function Console({ appName, setAppName, onSignOut }) {
           {page === "dashboard" && (
             <Dashboard counts={counts} allQuotations={allQuotations} todaysFollowups={todaysFollowups}
               onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} totalRecords={totalRecords}
-              onGoImport={() => setPage("import")} />
+              onGoImport={() => setPage("import")} onOpenFollowups={(filters) => { setFollowupPreset(filters); setPage("followups"); }} />
           )}
           {page === "import" && (
             <ImportPage schedules={schedules} holidays={holidays} presetType={importPresetType} setPresetType={setImportPresetType}
@@ -1324,7 +1324,7 @@ function Badge({ icon: Icon, label, value, fg, bg }) {
 }
 
 /* ------------------------------ Dashboard ------------------------------ */
-function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onOpenDetail, totalRecords, onGoImport }) {
+function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onOpenDetail, totalRecords, onGoImport, onOpenFollowups }) {
   const totalActive = allQuotations.filter((q) => !["Success", "Lost", "Completed"].includes(q.status)).length;
   const accountQ = allQuotations.filter((q) => q.category === "Account").length;
   const payrollQ = allQuotations.filter((q) => q.category === "Payroll").length;
@@ -1345,14 +1345,14 @@ function Dashboard({ counts, allQuotations, todaysFollowups, onOpenFollowup, onO
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-        <StatCard label="Active Quotations" value={totalActive} />
-        <StatCard label="Due Today" value={counts.dueToday} tint={AMBER} />
-        <StatCard label="Overdue" value={counts.overdue} tint={RED} />
-        <StatCard label="Upcoming" value={counts.upcoming} tint={BLUE} />
-        <StatCard label="Follow Up Later" value={counts.followUpLater} tint={VIOLET} />
-        <StatCard label="Account Quotations" value={accountQ} />
-        <StatCard label="Payroll Quotations" value={payrollQ} />
-        <StatCard label="Success · Lost" value={`${success} · ${lost}`} tint={GREEN} />
+        <StatCard label="Active Quotations" value={totalActive} onClick={() => onOpenFollowups({ status: ["Due Today", "Overdue", "Upcoming", "Follow Up Later", "Completed Today", "No Response"] })} />
+        <StatCard label="Due Today" value={counts.dueToday} tint={AMBER} onClick={() => onOpenFollowups({ status: ["Due Today"] })} />
+        <StatCard label="Overdue" value={counts.overdue} tint={RED} onClick={() => onOpenFollowups({ status: ["Overdue"] })} />
+        <StatCard label="Upcoming" value={counts.upcoming} tint={BLUE} onClick={() => onOpenFollowups({ status: ["Upcoming"] })} />
+        <StatCard label="Follow Up Later" value={counts.followUpLater} tint={VIOLET} onClick={() => onOpenFollowups({ status: ["Follow Up Later"] })} />
+        <StatCard label="Account Quotations" value={accountQ} onClick={() => onOpenFollowups({ category: "Account" })} />
+        <StatCard label="Payroll Quotations" value={payrollQ} onClick={() => onOpenFollowups({ category: "Payroll" })} />
+        <StatCard label="Success · Lost" value={`${success} · ${lost}`} tint={GREEN} onClick={() => onOpenFollowups({ status: ["Success", "Lost"] })} />
       </div>
 
       <div className="rounded-xl border bg-white" style={{ borderColor: LINE }}>
@@ -1441,7 +1441,7 @@ function FollowupTable({ docs, onOpenFollowup, onOpenDetail, onDeleteDoc, select
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 /* ------------------------------ Doc list page ------------------------------ */
-const EMPTY_FILTERS = { search: "", category: "All", status: "All", agent: "All", year: "All", month: "All" };
+const EMPTY_FILTERS = { search: "", category: "All", status: [], agent: "All", year: "All", month: "All" };
 
 function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onOpenDetail, onDeleteDoc, onBulkDelete, onBulkAction, initialFilters, clearInitialFilters }) {
   const [draft, setDraft] = useState(EMPTY_FILTERS);
@@ -1455,7 +1455,8 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
 
   const filtered = docs.filter((d) => {
     if (applied.category !== "All" && d.category !== applied.category) return false;
-    if (applied.status !== "All" && d.status !== applied.status) return false;
+    const selectedStatuses = Array.isArray(applied.status) ? applied.status : applied.status && applied.status !== "All" ? [applied.status] : [];
+    if (selectedStatuses.length > 0 && !selectedStatuses.includes(d.status)) return false;
     if (applied.completedToday) {
       if (d.lastFollowupDate !== ymd(TODAY)) return false;
     }
@@ -1476,7 +1477,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
     if (sortBy === "Import Date") return (asDate(b.importDate)?.getTime() || 0) - (asDate(a.importDate)?.getTime() || 0);
     return String(a.docNo || "").localeCompare(String(b.docNo || ""), undefined, { numeric: true, sensitivity: "base" });
   });
-  const statuses = ["All", "Due Today", "Overdue", "Upcoming", "Completed", "Follow Up Later", "Completed Today", "Success", "Lost", "No Response"];
+  const statuses = ["Due Today", "Overdue", "Upcoming", "Completed", "Follow Up Later", "Completed Today", "Success", "Lost", "No Response"];
   const isDirty = JSON.stringify(draft) !== JSON.stringify(applied);
   const isFilteredAtAll = Object.entries(applied).some(([k, v]) => v !== EMPTY_FILTERS[k]);
 
@@ -1513,7 +1514,7 @@ function DocListPage({ title, docs, agents = DEFAULT_AGENTS, onOpenFollowup, onO
           <input value={draft.search} onChange={(e) => setDraft({ ...draft, search: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") runFilter(); }} placeholder="Search customer, company, or document no." className="text-sm outline-none flex-1 bg-transparent" />
         </div>
         <Select value={draft.category} onChange={(v) => setDraft({ ...draft, category: v })} options={["All", "Account", "Payroll"]} label="Category" />
-        <Select value={draft.status} onChange={(v) => setDraft({ ...draft, status: v })} options={statuses} label="Status" />
+        <StatusCheckboxFilter value={draft.status} onChange={(status) => setDraft({ ...draft, status })} statuses={statuses} />
         <Select value={draft.agent} onChange={(v) => setDraft({ ...draft, agent: v })} options={["All", ...agents.map((agent) => agent.name)]} label="Agent" />
         <Select value={draft.year} onChange={(v) => setDraft({ ...draft, year: v })} options={["All", ...years.map(String)]} label="Year" />
         <Select value={draft.month} onChange={(v) => setDraft({ ...draft, month: v })} options={["All", ...MONTH_NAMES]} label="Month" />
@@ -2712,6 +2713,18 @@ function SettingsPage({ schedules, setSchedules, appName, setAppName, agents, se
         <button onClick={onResetData} className="text-xs font-medium px-3.5 py-2 rounded-lg border flex items-center gap-1.5" style={{ borderColor: RED, color: RED }}>
           <RefreshCw size={12} /> Clear Quotation Data
         </button>
+      </div>
+    </div>
+  );
+}
+function StatusCheckboxFilter({ value, onChange, statuses }) {
+  const selected = Array.isArray(value) ? value : value && value !== "All" ? [value] : [];
+  const toggle = (status) => onChange(selected.includes(status) ? selected.filter((item) => item !== status) : [...selected, status]);
+  return (
+    <div className="rounded-lg border bg-white px-3 py-2" style={{ borderColor: LINE }}>
+      <div className="flex items-center justify-between gap-3 mb-1.5"><span className="text-xs font-medium" style={{ color: INK }}>Status</span>{selected.length > 0 && <button onClick={() => onChange([])} className="text-[11px]" style={{ color: TEAL }}>Clear</button>}</div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+        {statuses.map((status) => <label key={status} className="inline-flex items-center gap-1.5 text-[11px] cursor-pointer" style={{ color: "#5C5D63" }}><input type="checkbox" checked={selected.includes(status)} onChange={() => toggle(status)} />{status}</label>)}
       </div>
     </div>
   );
