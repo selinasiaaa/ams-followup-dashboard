@@ -13,6 +13,7 @@ export const COLLECTIONS = {
   customers: "customers",
   agents: "agents",
   phones: "sending phone",
+  inquiryCalls: "inquiry-call-reminders",
 };
 
 const readCollection = async (name) => {
@@ -104,6 +105,7 @@ const quotationFields = (record = {}) => {
 const agentFields = (record) => ({ name: record.name || "", active: Boolean(record.active) });
 const phoneFields = (record) => ({ phoneName: record.name || record.phoneName || "", phoneNumber: record.number || record.phoneNumber || "", active: Boolean(record.active ?? true) });
 const customerFields = (record) => ({ companyName: record.company || record.companyName || "", personInCharge: record.contactName || record.personInCharge || "", phone: record.phone || "", email: record.email || "", category: record.category || "" });
+const inquiryCallFields = (record = {}) => ({ customer: record.customer || "", phone: record.phone || "", inquiry: record.inquiry || "", importedAt: record.importedAt || null, remindAt: record.remindAt || null, status: record.status || "Pending", remark: record.remark || "", notifiedAt: record.notifiedAt || null, snoozeUntil: record.snoozeUntil || null });
 export const quotationStore = {
   list: () => run("list quotations", () => readCollection(COLLECTIONS.quotations)),
   saveAll: (records) => run("save quotations", () => writeCollection(COLLECTIONS.quotations, records, quotationFields)),
@@ -137,4 +139,11 @@ export const phoneStore = {
   create: (record) => run("create sending phone", () => setDoc(doc(db, COLLECTIONS.phones, record.id), { ...phoneFields(record), createdAt: serverTimestamp(), updatedAt: serverTimestamp() })),
   update: (id, changes) => run("update sending phone", () => setDoc(doc(db, COLLECTIONS.phones, id), { phoneName: changes.name || "", phoneNumber: changes.number || "", active: Boolean(changes.active), updatedAt: serverTimestamp() }, { merge: true })),
   remove: (id) => run("delete sending phone", () => deleteDoc(doc(db, COLLECTIONS.phones, id))),
+};
+
+export const inquiryCallStore = {
+  list: () => run("list inquiry call reminders", () => readCollection(COLLECTIONS.inquiryCalls)),
+  create: (record) => run("create inquiry call reminder", () => setDoc(doc(db, COLLECTIONS.inquiryCalls, record.id), { ...inquiryCallFields(record), createdAt: serverTimestamp(), updatedAt: serverTimestamp() })),
+  update: (id, changes) => run("update inquiry call reminder", () => setDoc(doc(db, COLLECTIONS.inquiryCalls, id), { ...inquiryCallFields(changes), updatedAt: serverTimestamp() }, { merge: true })),
+  remove: (id) => run("delete inquiry call reminder", () => deleteDoc(doc(db, COLLECTIONS.inquiryCalls, id))),
 };
