@@ -18,8 +18,9 @@ import { appliesToState, mergeHolidays, MANUAL_KEY, readSaved, saveLocal } from 
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { browserLocalPersistence, onAuthStateChanged, setPersistence, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth, FIREBASE_LOGIN_EMAIL } from "./firebase";
-import { agentStore, customerStore, phoneStore, quotationStore } from "./firestore";
+import { agentStore, customerStore, inquiryCallStore, phoneStore, quotationStore } from "./firestore";
 import { EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import SqlBiPortal from "./SqlBiPortal";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -598,6 +599,8 @@ function Console({ appName, setAppName, onSignOut }) {
   const [operatingState, setOperatingState] = useState(() => readSaved("ams-holiday-office-state", DEFAULT_OPERATING_STATE));
   const [schedules, setSchedules] = useState(DEFAULT_SCHEDULES);
   const [quotations, setQuotations] = useState([]);
+  const [inquiryCalls, setInquiryCalls] = useState([]);
+  const [activeInquiryReminder, setActiveInquiryReminder] = useState(null);
   const holidayYears = [...new Set(quotations.flatMap(q => {
     const year = Number((q.date || "").slice(0, 4));
     return year >= 2000 && year <= 2100 ? [year, year + 1] : [];
@@ -622,7 +625,7 @@ function Console({ appName, setAppName, onSignOut }) {
   const confirmDelete = () => { if (deleteRequest) { deleteRequest.onConfirm(); } setDeleteRequest(null); };
   const cancelDelete = () => setDeleteRequest(null);
   const exportBackup = () => {
-    const backup = { exportedAt: new Date().toISOString(), appName, quotations, customers, agents, phones, schedules, manualHolidays, operatingState };
+    const backup = { exportedAt: new Date().toISOString(), appName, quotations, inquiryCalls, customers, agents, phones, schedules, manualHolidays, operatingState };
     const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -650,8 +653,8 @@ function Console({ appName, setAppName, onSignOut }) {
         // Optional local storage is unavailable; Firestore remains the source of truth.
       }
       try {
-        const [storedQuotations, storedAgents, storedPhones, storedCustomers] = await Promise.all([
-          quotationStore.list(), agentStore.list(), phoneStore.list(), customerStore.list(),
+        const [storedQuotations, storedAgents, storedPhones, storedCustomers, storedInquiryCalls] = await Promise.all([
+          quotationStore.list(), agentStore.list(), phoneStore.list(), customerStore.list(), inquiryCallStore.list(),
         ]);
         if (!cancelled) {
           if (storedQuotations.length) setQuotations(dedupeQuotationsByDocNo(storedQuotations.map((record) => ({
@@ -680,6 +683,7 @@ function Console({ appName, setAppName, onSignOut }) {
             company: record.company || record.companyName || "",
             contactName: record.contactName || record.personInCharge || "",
           })));
+          setInquiryCalls(storedInquiryCalls.map((record) => ({ ...record, status: record.status || "Pending", snoozeUntil: record.snoozeUntil || null })));
         }
       } catch (err) {
         console.error("[Firestore] Dashboard startup load failed", err);
@@ -800,6 +804,39 @@ function Console({ appName, setAppName, onSignOut }) {
     new Notification("AMS Follow-up reminder", { body: `${due.length} follow-up${due.length !== 1 ? "s are" : " is"} due or overdue.` });
     localStorage.setItem(key, "sent");
   }, [allDocs, dataLoaded]);
+
+  useEffect(() => {
+    if (!dataLoaded) return undefined;
+    const checkInquiryReminders = () => {
+      if (activeInquiryReminder) return;
+      const now = Date.now();
+      const due = inquiryCalls.find((item) => {
+        if (item.status !== "Pending") return false;
+        const reminderTime = item.snoozeUntil || item.remindAt;
+        return reminderTime && new Date(reminderTime).getTime() <= now && (!item.notifiedAt || item.snoozeUntil);
+      });
+      if (due) setActiveInquiryReminder(due);
+    };
+    checkInquiryReminders();
+    const timer = setInterval(checkInquiryReminders, 30000);
+    return () => clearInterval(timer);
+  }, [inquiryCalls, dataLoaded, activeInquiryReminder]);
+
+  const acknowledgeInquiryReminder = async () => {
+    if (!activeInquiryReminder) return;
+    const updated = { ...activeInquiryReminder, notifiedAt: new Date().toISOString(), snoozeUntil: null };
+    setInquiryCalls((current) => current.map((item) => item.id === updated.id ? updated : item));
+    setActiveInquiryReminder(null);
+    inquiryCallStore.update(updated.id, updated).catch((error) => console.error("[Firestore] Inquiry reminder acknowledgement failed", error));
+  };
+  const snoozeInquiryReminder = async () => {
+    if (!activeInquiryReminder) return;
+    const snoozeUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const updated = { ...activeInquiryReminder, notifiedAt: new Date().toISOString(), snoozeUntil };
+    setInquiryCalls((current) => current.map((item) => item.id === updated.id ? updated : item));
+    setActiveInquiryReminder(null);
+    inquiryCallStore.update(updated.id, updated).catch((error) => console.error("[Firestore] Inquiry reminder snooze failed", error));
+  };
 
   if (!dataLoaded) return <LoadingScreen label="Loading your data…" />;
 
@@ -1129,6 +1166,7 @@ function Console({ appName, setAppName, onSignOut }) {
         <nav className="flex flex-row md:flex-col gap-1 overflow-x-auto pb-1 md:pb-0">
           <NavItem icon={LayoutDashboard} label="Dashboard" active={page === "dashboard"} onClick={() => setPage("dashboard")} />
           <NavItem icon={UploadCloud} label="Import Data" active={page === "import"} onClick={() => setPage("import")} />
+          <NavItem icon={PhoneCall} label="Inquiry Calls" active={page === "inquiry-calls"} onClick={() => setPage("inquiry-calls")} count={inquiryCalls.filter((item) => item.status === "Pending").length} />
           <NavItem icon={Clock} label="Follow-ups" active={page === "followups"} onClick={() => setPage("followups")} count={counts.dueToday + counts.overdue} />
           <NavItem icon={CalendarDays} label="Holiday Calendar" active={page === "holidays"} onClick={() => setPage("holidays")} />
           <NavItem icon={BarChart3} label="Reports" active={page === "reports"} onClick={() => setPage("reports")} />
@@ -1160,6 +1198,7 @@ function Console({ appName, setAppName, onSignOut }) {
             <ImportPage schedules={schedules} holidays={holidays} presetType={importPresetType} setPresetType={setImportPresetType}
               existingQuotations={quotations} agents={agents} phones={phones} onCommit={commitImport} />
           )}
+          {page === "inquiry-calls" && <InquiryCallsPage calls={inquiryCalls} setCalls={setInquiryCalls} onSaved={showToast} />}
           {page === "followups" && <DocListPage title="All Follow-ups" docs={allDocs} agents={agents} onOpenFollowup={(d) => setActiveFollowupId(d.id)} onOpenDetail={setDetailDoc} onDeleteDoc={deleteDoc} onBulkDelete={bulkDeleteDocs} onBulkAction={bulkUpdateDocs} initialFilters={followupPreset} clearInitialFilters={() => setFollowupPreset(null)} />}
           {page === "holidays" && <HolidayCalendar holidays={holidays} setHolidays={setHolidays} operatingState={operatingState} setOperatingState={setOperatingState} requestDelete={requestDelete} feed={holidayFeed} states={MY_STATES} />}
           {page === "reports" && <ReportsPage allDocs={allDocs} />}
@@ -1174,20 +1213,29 @@ function Console({ appName, setAppName, onSignOut }) {
           onOpenDetail={(d) => { setCustomerDrill(null); setDetailDoc(d); }} />
       )}
       {deleteRequest && <DeleteConfirmModal request={deleteRequest} onCancel={cancelDelete} onConfirm={confirmDelete} />}
+      {activeInquiryReminder && <InquiryReminderPopup call={activeInquiryReminder} onOk={acknowledgeInquiryReminder} onRemindLater={snoozeInquiryReminder} />}
       <Toast toast={toast} />
     </div>
   );
 }
 
+function InquiryReminderPopup({ call, onOk, onRemindLater }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(18,23,43,0.55)" }}><div className="w-full max-w-md rounded-2xl bg-white shadow-2xl p-5" role="dialog" aria-modal="true" aria-labelledby="inquiry-reminder-title"><div className="flex items-start justify-between gap-3"><div><div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: AMBER }}>Phone call reminder</div><h2 id="inquiry-reminder-title" className="text-lg font-semibold mt-1" style={{ color: INK }}>Follow up with {call.customer}</h2></div><PhoneCall size={22} style={{ color: TEAL }} /></div><div className="mt-4 rounded-xl p-3" style={{ background: TEAL_SOFT }}><div className="text-sm font-medium" style={{ color: INK }}>{call.phone}</div><div className="text-xs mt-1" style={{ color: GRAY }}>{call.inquiry || "Customer inquiry needs more information."}</div>{call.remark && <div className="text-xs mt-2" style={{ color: GRAY }}>Remark: {call.remark}</div>}</div><p className="text-xs mt-4" style={{ color: GRAY }}>Please call the customer to obtain the missing details.</p><div className="flex justify-end gap-2 mt-5"><button type="button" onClick={onRemindLater} className="text-xs font-medium px-3.5 py-2.5 rounded-lg border" style={{ borderColor: LINE, color: INK }}>Remind later (5 min)</button><button type="button" onClick={onOk} className="text-xs font-medium px-4 py-2.5 rounded-lg" style={{ background: INK, color: "white" }}>OK</button></div></div></div>;
+}
+
 /* ------------------------------ Auth ------------------------------ */
 const LOGIN_USERNAME = "ams";
 
-function LoginPage({ appName, onLogin }) {
+function LoginPage({ appName, onLogin, onSqlBiLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [biUsername, setBiUsername] = useState("");
+  const [biPassword, setBiPassword] = useState("");
+  const [biError, setBiError] = useState("");
+  const [biSubmitting, setBiSubmitting] = useState(false);
 
   const submit = async () => {
     setError("");
@@ -1208,10 +1256,18 @@ function LoginPage({ appName, onLogin }) {
     }
   };
   const handleKeyDown = (e) => { if (e.key === "Enter") submit(); };
+  const submitSqlBi = async () => {
+    setBiError("");
+    setBiSubmitting(true);
+    try { await onSqlBiLogin(biUsername, biPassword); }
+    catch (error) { setBiError(error.message || "Could not sign in to SQL BI."); }
+    finally { setBiSubmitting(false); }
+  };
 
   return (
     <div className="flex h-full w-full items-center justify-center" style={{ background: INK }}>
-      <div className="w-full max-w-sm mx-4">
+      <div className="w-full max-w-3xl mx-4 grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div>
         <div className="flex flex-col items-center gap-2 mb-6">
           <div className="w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg" style={{ background: TEAL, color: "#08201D" }}>
             {appName.replace(/[^A-Z]/g, "").slice(0, 2) || appName.slice(0, 2).toUpperCase()}
@@ -1270,6 +1326,21 @@ function LoginPage({ appName, onLogin }) {
             {isSubmitting ? "Signing In..." : "Sign In"}
           </button>
         </div>
+        </div>
+        <div className="flex flex-col justify-center">
+          <div className="flex flex-col items-center gap-2 mb-6">
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg" style={{ background: "#3A5FCD", color: "white" }}>BI</div>
+            <div className="text-white text-lg font-semibold">SQL Accounting BI</div>
+            <div className="text-xs" style={{ color: "#7B7E92" }}>Read-only office dashboard</div>
+          </div>
+          <div className="rounded-2xl p-6 flex flex-col gap-4" style={{ background: "#1B2140", border: "1px solid #262B45" }}>
+            <div><div className="text-sm font-semibold text-white mb-1">SQL BI sign in</div><div className="text-xs" style={{ color: "#7B7E92" }}>Uses the existing SQL BI account and never accesses Follow-up records.</div></div>
+            <div><label className="text-xs font-medium block mb-1" style={{ color: "#B7B9C6" }}>Username</label><div className="flex items-center gap-2 rounded-lg px-3 py-2.5" style={{ background: "#12172B", border: "1px solid #2C3155" }}><User size={14} style={{ color: "#6E7189" }} /><input value={biUsername} onChange={(e) => setBiUsername(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitSqlBi(); }} placeholder="SQL BI username" autoComplete="username" className="flex-1 text-sm outline-none bg-transparent text-white placeholder:text-[#5B5F78]" /></div></div>
+            <div><label className="text-xs font-medium block mb-1" style={{ color: "#B7B9C6" }}>Password</label><div className="flex items-center gap-2 rounded-lg px-3 py-2.5" style={{ background: "#12172B", border: "1px solid #2C3155" }}><Lock size={14} style={{ color: "#6E7189" }} /><input type="password" value={biPassword} onChange={(e) => setBiPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitSqlBi(); }} placeholder="SQL BI password" autoComplete="current-password" className="flex-1 text-sm outline-none bg-transparent text-white placeholder:text-[#5B5F78]" /></div></div>
+            {biError && <div className="text-xs rounded-lg px-3 py-2 flex items-center gap-1.5" style={{ background: "rgba(194,59,59,0.15)", color: "#F0A0A0" }}><AlertCircle size={13} /> {biError}</div>}
+            <button type="button" onClick={submitSqlBi} disabled={biSubmitting} className="text-sm font-medium py-2.5 rounded-lg disabled:opacity-60" style={{ background: "#3A5FCD", color: "white" }}>{biSubmitting ? "Signing In..." : "Open SQL BI"}</button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1280,6 +1351,7 @@ export default function App() {
   const [appName, setAppName] = useState(DEFAULT_APP_NAME);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
+  const [sqlBiAuthenticated, setSqlBiAuthenticated] = useState(false);
 
   useEffect(() => { document.title = appName; }, [appName]);
 
@@ -1288,11 +1360,63 @@ export default function App() {
     setAuthLoading(false);
   }), []);
 
+  const signInSqlBi = async (username, password) => {
+    const baseUrl = String(import.meta.env.VITE_SQL_BI_API_URL || "")
+      .replace(/^http:\/\/localhost:8010$/, "http://127.0.0.1:8010")
+      .replace(/\/$/, "");
+    if (!baseUrl) throw new Error("SQL BI is not configured yet. Set VITE_SQL_BI_API_URL after the office server is ready.");
+    const response = await fetch(`${baseUrl}/api/access/login`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.detail || "Incorrect SQL BI username or password.");
+    }
+    setSqlBiAuthenticated(true);
+  };
+
   if (authLoading) return <LoadingScreen label="Checking your session..." />;
+  if (sqlBiAuthenticated) return <SqlBiPortal onSignOut={() => setSqlBiAuthenticated(false)} />;
   if (!isAuthenticated) {
-    return <LoginPage appName={appName} onLogin={() => setIsAuthenticated(true)} />;
+    return <LoginPage appName={appName} onLogin={() => setIsAuthenticated(true)} onSqlBiLogin={signInSqlBi} />;
   }
   return <Console appName={appName} setAppName={setAppName} onSignOut={() => signOut(auth)} />;
+}
+
+function localDateTimeInput(date = new Date()) {
+  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return shifted.toISOString().slice(0, 16);
+}
+
+function InquiryCallsPage({ calls, setCalls, onSaved }) {
+  const [form, setForm] = useState(() => ({ customer: "", phone: "", inquiry: "", importedAt: localDateTimeInput(), remindAt: localDateTimeInput(new Date(Date.now() + 90 * 60000)), remark: "" }));
+  const [notificationState, setNotificationState] = useState(() => typeof Notification === "undefined" ? "unsupported" : Notification.permission);
+  const [showHistory, setShowHistory] = useState(false);
+  const updateForm = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const enableNotifications = async () => {
+    if (typeof Notification === "undefined") { onSaved("Browser notifications are not supported on this device."); return; }
+    const permission = await Notification.requestPermission();
+    setNotificationState(permission);
+    onSaved(permission === "granted" ? "Inquiry call reminders are enabled on this device." : "Browser reminders were not enabled.");
+  };
+  const addCall = async (event) => {
+    event.preventDefault();
+    if (!form.customer.trim() || !form.phone.trim() || !form.importedAt || !form.remindAt) { onSaved("Customer, phone, import time, and reminder time are required."); return; }
+    const record = { id: uid("INQ-"), ...form, customer: form.customer.trim(), phone: form.phone.trim(), status: "Pending", importedAt: new Date(form.importedAt).toISOString(), remindAt: new Date(form.remindAt).toISOString(), notifiedAt: null };
+    try { await inquiryCallStore.create(record); setCalls((current) => [record, ...current]); setForm({ customer: "", phone: "", inquiry: "", importedAt: localDateTimeInput(), remindAt: localDateTimeInput(new Date(Date.now() + 90 * 60000)), remark: "" }); onSaved("Inquiry call reminder saved."); }
+    catch (error) { onSaved(`Could not save reminder: ${error.message}`); }
+  };
+  const updateCallStatus = async (call, status) => { const updated = { ...call, status, notifiedAt: new Date().toISOString(), snoozeUntil: null }; try { await inquiryCallStore.update(call.id, updated); setCalls((current) => current.map((item) => item.id === call.id ? updated : item)); onSaved(status === "Called" ? "Inquiry call marked as completed." : "Customer response saved."); } catch (error) { onSaved(`Could not update reminder: ${error.message}`); } };
+  const markCalled = (call) => updateCallStatus(call, "Called");
+  const markCustomerResponded = (call) => updateCallStatus(call, "Customer Responded");
+  const removeCall = async (call) => { try { await inquiryCallStore.remove(call.id); setCalls((current) => current.filter((item) => item.id !== call.id)); onSaved("Inquiry call reminder deleted."); } catch (error) { onSaved(`Could not delete reminder: ${error.message}`); } };
+  const displayDateTime = (value) => value ? new Date(value).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }) : "—";
+  const activeCalls = calls.filter((item) => item.status === "Pending");
+  const historyCalls = calls.filter((item) => item.status !== "Pending");
+  return <div className="flex flex-col gap-4"><div><h2 className="text-base font-semibold" style={{ color: INK }}>Inquiry Calls</h2><p className="text-xs" style={{ color: GRAY }}>Record an incomplete customer inquiry and receive a phone-call reminder after 1–2 hours.</p></div><form onSubmit={addCall} className="rounded-xl border bg-white p-4 sm:p-5" style={{ borderColor: LINE }}><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><label className="text-xs font-medium" style={{ color: GRAY }}>Customer<input value={form.customer} onChange={(event) => updateForm("customer", event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ borderColor: LINE }} placeholder="Customer name" /></label><label className="text-xs font-medium" style={{ color: GRAY }}>Phone number<input value={form.phone} onChange={(event) => updateForm("phone", event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ borderColor: LINE }} placeholder="Phone number" /></label><label className="text-xs font-medium" style={{ color: GRAY }}>Import date & time<input type="datetime-local" value={form.importedAt} onChange={(event) => updateForm("importedAt", event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ borderColor: LINE }} /></label><label className="text-xs font-medium" style={{ color: GRAY }}>Call reminder date & time<input type="datetime-local" value={form.remindAt} onChange={(event) => updateForm("remindAt", event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ borderColor: LINE }} /></label></div><label className="block text-xs font-medium mt-3" style={{ color: GRAY }}>Inquiry / missing information<textarea value={form.inquiry} onChange={(event) => updateForm("inquiry", event.target.value)} rows={2} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ borderColor: LINE }} placeholder="What information is still missing?" /></label><label className="block text-xs font-medium mt-3" style={{ color: GRAY }}>Remark<textarea value={form.remark} onChange={(event) => updateForm("remark", event.target.value)} rows={2} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ borderColor: LINE }} placeholder="Optional internal remark" /></label><div className="flex flex-wrap items-center gap-2 mt-4"><button type="submit" className="text-xs font-medium px-4 py-2.5 rounded-lg" style={{ background: INK, color: "white" }}><Plus size={13} className="inline mr-1" />Save inquiry call</button><button type="button" onClick={enableNotifications} className="text-xs font-medium px-4 py-2.5 rounded-lg border" style={{ borderColor: LINE, color: notificationState === "granted" ? GREEN : INK }}>{notificationState === "granted" ? "Notifications enabled" : "Enable laptop notification"}</button></div></form><section className="rounded-xl border bg-white overflow-auto" style={{ borderColor: LINE }}><div className="px-5 py-4 border-b flex items-center justify-between" style={{ borderColor: LINE }}><h3 className="text-sm font-semibold" style={{ color: INK }}>Call reminders</h3><span className="text-xs" style={{ color: GRAY }}>{activeCalls.length} pending</span></div>{activeCalls.length ? <table className="w-full min-w-[850px] text-xs"><thead><tr className="text-left uppercase tracking-wide" style={{ color: "#9A9AA0" }}><th className="px-4 py-3">Customer</th><th className="px-4 py-3">Phone</th><th className="px-4 py-3">Import date/time</th><th className="px-4 py-3">Call reminder</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Action</th></tr></thead><tbody>{[...activeCalls].sort((a, b) => new Date(a.remindAt || 0) - new Date(b.remindAt || 0)).map((call) => <tr key={call.id} className="border-t" style={{ borderColor: LINE }}><td className="px-4 py-3 font-medium" style={{ color: INK }}>{call.customer}<div className="text-[11px] font-normal mt-1" style={{ color: GRAY }}>{call.inquiry || call.remark || "No extra details"}</div></td><td className="px-4 py-3" style={{ color: GRAY }}>{call.phone}</td><td className="px-4 py-3 whitespace-nowrap" style={{ color: GRAY }}>{displayDateTime(call.importedAt)}</td><td className="px-4 py-3 whitespace-nowrap" style={{ color: call.status === "Pending" && new Date(call.remindAt) <= new Date() ? RED : GRAY }}>{displayDateTime(call.remindAt)}</td><td className="px-4 py-3" style={{ color: AMBER }}>{call.status}</td><td className="px-4 py-3 whitespace-nowrap"><div className="flex flex-wrap gap-2"><button type="button" onClick={() => markCalled(call)} className="rounded-lg px-2.5 py-1.5" style={{ background: GREEN_SOFT, color: GREEN }}>Mark called</button><button type="button" onClick={() => markCustomerResponded(call)} className="rounded-lg px-2.5 py-1.5" style={{ background: BLUE_SOFT, color: BLUE }}>Customer responded</button><button type="button" onClick={() => removeCall(call)} className="rounded-lg px-2.5 py-1.5" style={{ background: RED_SOFT, color: RED }}>Delete</button></div></td></tr>)}</tbody></table> : <p className="p-5 text-xs" style={{ color: GRAY }}>No active call reminders.</p>}</section><section className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: LINE }}><div className="px-5 py-4 flex items-center justify-between"><h3 className="text-sm font-semibold" style={{ color: INK }}>Reminder history</h3><button type="button" onClick={() => setShowHistory((value) => !value)} className="text-xs font-medium px-3 py-2 rounded-lg border" style={{ borderColor: LINE, color: INK }}>{showHistory ? "Hide history" : `View history (${historyCalls.length})`}</button></div>{showHistory && (historyCalls.length ? <div className="overflow-auto"><table className="w-full min-w-[760px] text-xs"><thead><tr className="text-left uppercase tracking-wide" style={{ color: "#9A9AA0" }}><th className="px-4 py-3">Customer</th><th className="px-4 py-3">Phone</th><th className="px-4 py-3">Import date/time</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Reminder time</th></tr></thead><tbody>{historyCalls.sort((a, b) => new Date(b.importedAt || 0) - new Date(a.importedAt || 0)).map((call) => <tr key={call.id} className="border-t" style={{ borderColor: LINE }}><td className="px-4 py-3 font-medium" style={{ color: INK }}>{call.customer}</td><td className="px-4 py-3" style={{ color: GRAY }}>{call.phone}</td><td className="px-4 py-3 whitespace-nowrap" style={{ color: GRAY }}>{displayDateTime(call.importedAt)}</td><td className="px-4 py-3" style={{ color: GREEN }}>{call.status}</td><td className="px-4 py-3 whitespace-nowrap" style={{ color: GRAY }}>{displayDateTime(call.remindAt)}</td></tr>)}</tbody></table></div> : <p className="p-5 text-xs" style={{ color: GRAY }}>No completed inquiry calls yet.</p>)}</section></div>;
 }
 
 /* ------------------------------ Top bar ------------------------------ */

@@ -18,6 +18,12 @@ firebase deploy --only firestore:rules
 
 Use **Settings → Download backup** before deploying rules or making major data changes.
 
+## SQL Accounting BI (separate read-only workspace)
+
+The portal includes a second, independent **SQL Accounting BI** sign-in panel and React workspace. It does not use or modify the Follow-up Firestore collections.
+
+The workspace connects only to an office-local FastAPI service from `PROJECT.zip`. Configure `VITE_SQL_BI_API_URL` from `.env.example` after that service is available through an authenticated HTTPS address. Do not expose Firebird directly and do not place SQL BI credentials in Vite environment variables: the React login sends them only to the office FastAPI `/api/access/login` endpoint.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

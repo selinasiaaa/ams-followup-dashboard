@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <!-- =====================================================
+         BASIC PAGE INFORMATION
+         ===================================================== -->
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        SQL Accounting BI Dashboard
+    </title>
+
+
+    <!-- =====================================================
+         CSS
+         
+         All styling is handled by:
+         
+         static/css/style.css
+         ===================================================== -->
+
+    <link
+        rel="stylesheet"
+        href="/static/css/style.css?v=20260914-access3"
+    >
+
+<link rel="stylesheet" href="/static/css/reporting.css?v=5">
+<link rel="stylesheet" href="/static/css/reporting-month-comparison.css?v=1">
+<link rel="stylesheet" href="/static/css/sales-analysis.css?v=1">
+<link rel="stylesheet" href="/static/css/customer-statement.css?v=2">
+<link rel="stylesheet" href="/static/css/customer-statement-modern.css?v=1">
+<link rel="stylesheet" href="/static/css/customer-statement-status.css?v=1">
+<link rel="stylesheet" href="/static/css/customer-statement-email-badge.css?v=1">
+</head>
+
+
+<body>
+
+    <div id="access-gateway" class="access-gateway" aria-live="polite">
+        <section class="access-card">
+            <div class="access-mark" aria-hidden="true">🔒</div>
+            <p class="access-kicker">Welcome to</p>
+            <h1>AMS Portal</h1>
+            <p id="access-copy">Enter your password to continue.</p>
+            <form id="login-form" class="access-form">
+                <label class="sr-only">Password</label>
+                <div class="password-field"><span aria-hidden="true">⌑</span><input id="gateway-password" type="password" placeholder="Password" autocomplete="current-password" required><button id="toggle-password" type="button" aria-label="Show password">◉</button></div>
+                <button class="button access-submit" type="submit">Authenticate <span aria-hidden="true">→</span></button>
+            </form>
+            <form id="database-form" class="access-form hidden">
+                <label>DCF file<select id="gateway-dcf" required></select></label>
+                <label>FDB database<select id="gateway-fdb" required disabled><option>Choose a DCF file first</option></select></label>
+                <div id="gateway-db-info" class="gateway-db-info hidden"></div>
+                <button class="button" type="submit">Open dashboard</button>
+            </form>
+            <p id="access-error" class="access-error" role="alert"></p>
+        </section>
+        <p class="access-copyright">© 2026 AMS Portal</p>
+    </div>
+
+
+    <!-- =====================================================
+         SIDEBAR
+         
+         Navigation only.
+         The actual page content is loaded by JavaScript.
+         ===================================================== -->
+
+    <aside class="sidebar">
+
+
+        <!-- -------------------------------------------------
+             APPLICATION LOGO
+             ------------------------------------------------- -->
+
+        <div class="logo">
+
+            SQL Accounting BI
+
+            <div class="logo-subtitle">
+
+                Firebird Local Dashboard
+
+            </div>
+
+        </div>
+
+
+        <!-- -------------------------------------------------
+             DASHBOARD NAVIGATION
+             ------------------------------------------------- -->
+
+        <div class="nav-section">
+
+            <div class="nav-title">
+
+                Dashboard
+
+            </div>
+
+
+            <button
+                type="button"
+                class="nav-link"
+                data-page="dashboard"
+            >
+
+                🏠 Dashboard
+
+            </button>
+
+        </div>
+
+        <div class="nav-section">
+
+            <div class="nav-title">
+                Reports
+            </div>
+
+            <button
+                type="button"
+                class="nav-link"
+                data-page="profit-loss"
+            >
+                📈 Profit &amp; Loss
+            </button>
+
+            <button type="button" class="nav-link" data-page="sales-analysis" onclick="showSalesAnalysis()">
+                📊 Yearly Sales Analysis
+            </button>
+
+            <button type="button" class="nav-link" data-page="customer-statement">
+                📄 Customer Statement
+            </button>
+
+        </div>
+
+
+        <!-- -------------------------------------------------
+             DATABASE NAVIGATION
+             ------------------------------------------------- -->
+
+        <div class="nav-section">
+
+            <div class="nav-title">
+
+                Database
+
+            </div>
+
+
+            <button
+                type="button"
+                class="nav-link"
+                data-page="tables"
+            >
+
+                🗄 Database Tables
+
+            </button>
+
+        </div>
+
+        <div class="sidebar-footer">
+            <div id="active-database" class="active-database hidden"></div>
+            <button type="button" class="nav-link" id="change-database">⇄ Change database</button>
+            <button type="button" class="nav-link nav-logout" id="logout-button">↪ Log out</button>
+        </div>
+
+
+    </aside>
+
+
+
+    <!-- =====================================================
+         MAIN CONTENT
+         
+         JavaScript will dynamically render:
+         
+         - Dashboard
+         - Database Tables
+         - Raw Table
+         - Document Listing
+         - Document Detail
+         
+         into this container.
+         ===================================================== -->
+
+    <main class="main">
+
+
+        <div id="app">
+
+            <!--
+                Initial loading message.
+
+                JavaScript will replace this content
+                once the application starts.
+            -->
+
+            <div class="loading">
+
+                Loading...
+
+            </div>
+
+        </div>
+
+
+    </main>
+
+
+
+    <!-- =====================================================
+         JAVASCRIPT
+         
+         All frontend logic is handled by:
+         
+         static/js/app.js
+         ===================================================== -->
+
+    <script src="/static/js/access-gateway.js?v=3"></script>
+    <script
+        src="/static/js/app.js?v=20260914-access1"
+    ></script>
+
+
+<script src="/static/js/reporting.js?v=8"></script>
+<script src="/static/js/customer-statement.js?v=8"></script>
+<script src="/static/js/sales-analysis.js?v=8"></script>
+</body>
+
+</html>
