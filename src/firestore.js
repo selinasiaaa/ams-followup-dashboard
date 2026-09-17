@@ -60,6 +60,9 @@ const quotationFields = (record = {}) => {
   includeIfPresent("docNo", (value) => value ?? "");
   includeIfPresent("totalAmount", (value) => Number(value ?? 0));
   includeIfPresent("followupStage", (value) => Number(value ?? 0));
+  // Persist the current field name as well as the legacy alias. This keeps
+  // completion progress stable after a refresh for records from either schema.
+  includeIfPresent("completedStages", (value) => Number(value ?? 0));
   includeIfPresent("nextFollowup", (value) => value ?? null);
   includeIfPresent("lastFollowupDate", (value) => value ?? null);
   includeIfPresent("agent", (value) => value ?? "");
