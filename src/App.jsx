@@ -666,7 +666,7 @@ function Console({ appName, setAppName, onSignOut }) {
             phone: record.phone || "",
             amount: record.amount ?? record.totalAmount ?? 0,
             category: record.category || "",
-            completedStages: record.completedStages ?? record.followupStage ?? 0,
+            completedStages: Number(record.completedStages ?? record.followupStage ?? 0) || 0,
             assignedAgent: record.assignedAgent || record.agent || "",
             manualStatus: normalizeManualStatus(record.manualStatus),
             rescheduleDate: record.rescheduleDate || record.nextFollowup || null,
@@ -742,7 +742,7 @@ function Console({ appName, setAppName, onSignOut }) {
     const completedStageDates = completionDatesFor(doc, stages);
     const dates = computeScheduleDates(doc.date, stages, holidays, operatingState, completedStageDates);
     const totalStages = stages.length;
-    const idx = doc.completedStages;
+    const idx = Number(doc.completedStages) || 0;
     const scheduledNext = idx < totalStages ? dates[idx] : null;
     // Older records may contain a manual weekend/holiday override. Display it on
     // the next working day without changing the stored record or its history.
@@ -952,10 +952,10 @@ function Console({ appName, setAppName, onSignOut }) {
         ...d,
         assignedAgent: params?.agentName || d.assignedAgent || d.staff || "",
         sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
-        completedStages: act === "Completed" ? Math.min((d.completedStages || 0) + 1, stages.length) : d.completedStages,
+        completedStages: act === "Completed" ? Math.min((Number(d.completedStages) || 0) + 1, stages.length) : Number(d.completedStages) || 0,
         completedStageDates: act === "Completed" ? (() => {
           const dates = Array.isArray(d.completedStageDates) ? [...d.completedStageDates] : [];
-          dates[Math.min(d.completedStages || 0, stages.length - 1)] = ymd(TODAY);
+          dates[Math.min(Number(d.completedStages) || 0, stages.length - 1)] = ymd(TODAY);
           return dates;
         })() : d.completedStageDates,
         rescheduleDate: act === "Completed" ? null : act === "Rescheduled" ? normalizedFollowupYMD(params?.rescheduleDate, holidays, operatingState) : d.rescheduleDate,
