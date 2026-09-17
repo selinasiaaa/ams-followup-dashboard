@@ -109,7 +109,7 @@ const quotationFields = (record = {}) => {
 const agentFields = (record) => ({ name: record.name || "", active: Boolean(record.active) });
 const phoneFields = (record) => ({ phoneName: record.name || record.phoneName || "", phoneNumber: record.number || record.phoneNumber || "", active: Boolean(record.active ?? true) });
 const customerFields = (record) => ({ companyName: record.company || record.companyName || "", personInCharge: record.contactName || record.personInCharge || "", phone: record.phone || "", email: record.email || "", category: record.category || "" });
-const inquiryCallFields = (record = {}) => ({ customer: record.customer || "", phone: record.phone || "", inquiry: record.inquiry || "", importedAt: record.importedAt || null, remindAt: record.remindAt || null, status: record.status || "Pending", remark: record.remark || "", notifiedAt: record.notifiedAt || null, snoozeUntil: record.snoozeUntil || null });
+const inquiryCallFields = (record = {}) => ({ customer: record.customer || "", phone: record.phone || "", inquiry: record.inquiry || "", importedAt: record.importedAt || null, remindAt: record.remindAt || null, sendingPhoneId: record.sendingPhoneId || null, status: record.status || "Pending", remark: record.remark || "", notifiedAt: record.notifiedAt || null, snoozeUntil: record.snoozeUntil || null });
 export const quotationStore = {
   list: () => run("list quotations", () => readCollection(COLLECTIONS.quotations)),
   saveAll: (records) => run("save quotations", () => writeCollection(COLLECTIONS.quotations, records, quotationFields)),
