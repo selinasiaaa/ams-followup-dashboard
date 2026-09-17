@@ -247,10 +247,8 @@ def _text(value):
 
 def get_table_names():
     """
-    Return user-facing SQL Accounting tables.
-
-    T_01_..., T_02_..., etc. are internal/generated tables
-    and are intentionally hidden from the dashboard.
+    Return every non-system Firebird table, including SQL Accounting's
+    generated T_... tables, for the read-only database browser.
     """
 
     con = get_connection()
@@ -277,10 +275,6 @@ def get_table_names():
                     continue
 
                 name = _text(row[0]).strip()
-
-                # Hide internal/generated tables
-                if name.upper().startswith("T_"):
-                    continue
 
                 tables.append(name)
 
@@ -562,6 +556,106 @@ def get_document_listing(table_name, limit=500):
 
     finally:
         con.close()
+
+def get_sales_quotation_listing(limit=500):
+    """Join quotation headers/details and return the focused follow-up fields."""
+    available = {name.upper(): name for name in get_table_names()}
+    if "SL_QT" not in available or "SL_QTDTL" not in available:
+        return None, "Sales Quotation header/detail tables (SL_QT and SL_QTDTL) were not found."
+
+    row_limit = max(1, min(int(limit), 1000))
+    con = get_connection()
+    try:
+        cur = con.cursor()
+        try:
+            cur.execute(f'''SELECT FIRST {row_limit}
+                Q."DOCKEY", Q."DOCNO", Q."DOCDATE", Q."CODE", Q."COMPANYNAME",
+                Q."ATTENTION", Q."PHONE1", Q."MOBILE", Q."LOCALDOCAMT", Q."BRANCHNAME"
+                FROM "SL_QT" Q
+                ORDER BY Q."DOCDATE" DESC, Q."DOCNO" DESC''')
+            headers = cur.fetchall()
+        finally:
+            cur.close()
+
+        document_keys = [row[0] for row in headers]
+        categories = {}
+        if document_keys:
+            detail_cur = con.cursor()
+            try:
+                placeholders = ", ".join("?" for _ in document_keys)
+                detail_cur.execute(
+                    f'''SELECT D."DOCKEY", D."DESCRIPTION" FROM "SL_QTDTL" D
+                        WHERE D."DOCKEY" IN ({placeholders})
+                        ORDER BY D."DOCKEY", D."SEQ"''',
+                    document_keys,
+                )
+                for document_key, description in detail_cur.fetchall():
+                    if document_key in categories:
+                        continue
+                    lines = [line.strip() for line in _text(description).splitlines() if line.strip()]
+                    if lines:
+                        categories[document_key] = lines[0]
+            finally:
+                detail_cur.close()
+
+        customer_codes = sorted({_text(row[3]).strip() for row in headers if row[3] is not None})
+        customers, branches = {}, defaultdict(list)
+        if customer_codes:
+            placeholders = ", ".join("?" for _ in customer_codes)
+            customer_cur = con.cursor()
+            try:
+                customer_cur.execute(
+                    f'''SELECT "CODE", "COMPANYNAME" FROM "AR_CUSTOMER"
+                        WHERE "CODE" IN ({placeholders})''',
+                    customer_codes,
+                )
+                customers = {_text(row[0]).strip().upper(): row for row in customer_cur.fetchall()}
+            finally:
+                customer_cur.close()
+
+            branch_cur = con.cursor()
+            try:
+                branch_cur.execute(
+                    f'''SELECT "CODE", "BRANCHTYPE", "BRANCHNAME", "ATTENTION", "PHONE1", "MOBILE"
+                        FROM "AR_CUSTOMERBRANCH" WHERE "CODE" IN ({placeholders})''',
+                    customer_codes,
+                )
+                for branch in branch_cur.fetchall():
+                    branches[_text(branch[0]).strip().upper()].append(branch)
+            finally:
+                branch_cur.close()
+    finally:
+        con.close()
+
+    def value(item):
+        return _text(item).strip() if item is not None else ""
+
+    rows = []
+    for document_key, docno, docdate, code_value, company, attention, phone, mobile, total, branch_name in headers:
+        code = value(code_value).upper()
+        branch_candidates = branches.get(code, [])
+        requested_branch = value(branch_name).upper()
+        branch = next((item for item in branch_candidates if value(item[2]).upper() == requested_branch), None)
+        if branch is None:
+            branch = next((item for item in branch_candidates if value(item[1]).upper() == "B"), None)
+        if branch is None and branch_candidates:
+            branch = branch_candidates[0]
+        customer = customers.get(code)
+        rows.append((
+            docdate,
+            categories.get(document_key, ""),
+            value(company) or (value(customer[1]) if customer else ""),
+            value(attention) or (value(branch[3]) if branch else ""),
+            value(phone) or value(mobile) or (value(branch[4]) if branch else "") or (value(branch[5]) if branch else ""),
+            value(docno),
+            total,
+        ))
+
+    return {
+        "table": "SL_QT + SL_QTDTL",
+        "columns": ["DOCUMENT_DATE", "QUOTATION_CATEGORY", "COMPANY_NAME", "PERSON_IN_CHARGE", "PHONE_NUMBER", "DOCUMENT_NUMBER", "QUOTATION_TOTAL_RM"],
+        "rows": rows,
+    }, None
 
 def get_document_detail(table_name, docno):
 

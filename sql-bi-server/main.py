@@ -45,6 +45,7 @@ from firebird_db import (
     get_table_names,
     get_table_preview,
     get_document_listing,
+    get_sales_quotation_listing,
     get_document_detail,
     is_document_table,
     categorize_tables,
@@ -170,6 +171,10 @@ def access_select_database(payload: DatabaseRequest, request: Request):
 @app.middleware("http")
 async def require_gateway(request: Request, call_next):
     path = request.url.path
+    # Let CORSMiddleware answer browser preflight requests before applying the
+    # SQL BI session/database gate.
+    if request.method == "OPTIONS":
+        return await call_next(request)
     if path.startswith("/static") or path == "/" or path.startswith("/api/access"):
         return await call_next(request)
     if path.startswith("/api/") and not _gateway_session(request).get("database_ready"):
@@ -410,6 +415,21 @@ def api_documents(
         for row in result["rows"]
     ],
 }
+
+
+@app.get("/api/sales-quotations")
+def api_sales_quotations(limit: int = Query(default=500, ge=1, le=1000)):
+    """Sales quotations only, enriched from Maintain Customer and Customer Branch."""
+    try:
+        result, error = get_sales_quotation_listing(limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    return {
+        **result,
+        "rows": [[json_value(value) for value in row] for row in result["rows"]],
+    }
 
 
 # =========================================================
