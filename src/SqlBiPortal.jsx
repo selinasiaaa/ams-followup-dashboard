@@ -56,7 +56,14 @@ export default function SqlBiPortal({ onSignOut }) {
 
   const refreshStatus = async () => {
     setStatus({ loading: true, data: null, error: "" });
-    try { setStatus({ loading: false, data: await readApi("/api/access/status"), error: "" }); }
+    try {
+      const data = await readApi("/api/access/status");
+      if (!data.logged_in) {
+        onSignOut();
+        return;
+      }
+      setStatus({ loading: false, data, error: "" });
+    }
     catch (error) { setStatus({ loading: false, data: null, error: error.message }); }
   };
   const loadTables = async () => {
