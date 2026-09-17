@@ -956,8 +956,10 @@ function Console({ appName, setAppName, onSignOut }) {
         sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
         completedStages: act === "Completed" ? Math.min((Number(d.completedStages) || 0) + 1, stages.length) : Number(d.completedStages) || 0,
         completedStageDates: act === "Completed" ? (() => {
-          const dates = Array.isArray(d.completedStageDates) ? [...d.completedStageDates] : [];
-          dates[Math.min(Number(d.completedStages) || 0, stages.length - 1)] = ymd(TODAY);
+          const dates = Array.isArray(d.completedStageDates) ? d.completedStageDates.map((date) => date ?? null) : [];
+          const completionIndex = Math.min(Number(d.completedStages) || 0, stages.length - 1);
+          while (dates.length <= completionIndex) dates.push(null);
+          dates[completionIndex] = ymd(TODAY);
           return dates;
         })() : d.completedStageDates,
         rescheduleDate: act === "Completed" ? null : act === "Rescheduled" ? normalizedFollowupYMD(params?.rescheduleDate, holidays, operatingState) : d.rescheduleDate,
