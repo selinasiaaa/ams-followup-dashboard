@@ -44,6 +44,7 @@ if ($ServerIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
 }
 
 $pythonCandidates = @(
+    (Join-Path $backendDir ".venv\Scripts\python.exe"),
     "C:\Users\amsof\Documents\Codex\Python313Embed\python.exe",
     (Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
