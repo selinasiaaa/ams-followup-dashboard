@@ -8,6 +8,26 @@ $backendDir = Join-Path $projectDir "sql-bi-server"
 $logDir = Join-Path $projectDir "logs"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
+function Stop-ListenerOnPort {
+    param([int]$Port)
+
+    $processIds = netstat -ano -p tcp |
+        Select-String -Pattern "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$" |
+        ForEach-Object { [int]$_.Matches[0].Groups[1].Value } |
+        Sort-Object -Unique
+
+    foreach ($processId in $processIds) {
+        Write-Host "Stopping the existing process on port $Port (PID $processId)..." -ForegroundColor Yellow
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+    }
+}
+
+# Restart only the two ports owned by this dashboard workflow. This prevents an
+# old localhost-only Vite or Uvicorn process from blocking the LAN services.
+Stop-ListenerOnPort -Port 8010
+Stop-ListenerOnPort -Port 5174
+Start-Sleep -Milliseconds 750
+
 if (-not $ServerIp) {
     $socket = [System.Net.Sockets.UdpClient]::new()
     try {
