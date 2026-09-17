@@ -921,6 +921,7 @@ function Console({ appName, setAppName, onSignOut }) {
         return { 
           ...d, 
           manualStatus: updatedStatus, // null when cleared 
+          status: updatedStatus,
           history: trimHistoryEvents([...(d.history || []), { 
             date: ymd(TODAY), 
             stage: stageInfo ? stageInfo.label : "Follow-up", 
@@ -950,6 +951,7 @@ function Console({ appName, setAppName, onSignOut }) {
       const isTerminal = ["Success", "Lost"].includes(act);
       const updated = {
         ...d,
+        status: act === "Completed" ? "Completed" : act,
         assignedAgent: params?.agentName || d.assignedAgent || d.staff || "",
         sendingPhoneId: params?.phoneId || d.sendingPhoneId || null,
         completedStages: act === "Completed" ? Math.min((Number(d.completedStages) || 0) + 1, stages.length) : Number(d.completedStages) || 0,

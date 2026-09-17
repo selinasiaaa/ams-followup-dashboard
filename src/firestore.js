@@ -65,6 +65,7 @@ const quotationFields = (record = {}) => {
   includeIfPresent("completedStages", (value) => Number(value ?? 0));
   includeIfPresent("nextFollowup", (value) => value ?? null);
   includeIfPresent("lastFollowupDate", (value) => value ?? null);
+  includeIfPresent("status", (value) => value ?? null);
   includeIfPresent("agent", (value) => value ?? "");
   includeIfPresent("manualStatus", (value) => normalizeManualStatus(value));
   includeIfPresent("category", (value) => value ?? "");
