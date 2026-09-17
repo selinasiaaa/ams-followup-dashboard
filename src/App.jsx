@@ -1375,9 +1375,11 @@ export default function App() {
   }), []);
 
   const signInSqlBi = async (username, password) => {
-    const baseUrl = String(import.meta.env.VITE_SQL_BI_API_URL || "")
-      .replace(/^http:\/\/localhost:8010$/, "http://127.0.0.1:8010")
-      .replace(/\/$/, "");
+    const configuredUrl = String(import.meta.env.VITE_SQL_BI_API_URL || "").replace(/\/$/, "");
+    const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
+    const baseUrl = /^(localhost|127\.0\.0\.1)$/.test(browserHost) && configuredUrl.startsWith("http://")
+      ? `http://${browserHost}:8010`
+      : configuredUrl;
     if (!baseUrl) throw new Error("SQL BI is not configured yet. Set VITE_SQL_BI_API_URL after the office server is ready.");
     const response = await fetch(`${baseUrl}/api/access/login`, {
       method: "POST",

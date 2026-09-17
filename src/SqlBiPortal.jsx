@@ -5,9 +5,13 @@ const NAVY = "#12172B";
 const TEAL = "#0F8A82";
 const LINE = "#E7E5DE";
 
-const apiUrl = () => String(import.meta.env.VITE_SQL_BI_API_URL || "")
-  .replace(/^http:\/\/localhost:8010$/, "http://127.0.0.1:8010")
-  .replace(/\/$/, "");
+const apiUrl = () => {
+  const configuredUrl = String(import.meta.env.VITE_SQL_BI_API_URL || "").replace(/\/$/, "");
+  const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
+  return /^(localhost|127\.0\.0\.1)$/.test(browserHost) && configuredUrl.startsWith("http://")
+    ? `http://${browserHost}:8010`
+    : configuredUrl;
+};
 
 async function readApi(path) {
   const base = apiUrl();
