@@ -197,17 +197,22 @@ function trimHistoryEvents(events, maxEvents = MAX_HISTORY_EVENTS) {
 // retried create, or a leftover from an earlier import bug). Rather than
 // trusting Firestore's raw list 1:1, collapse duplicates by docNo (falling
 // back to id when docNo is blank) every time we map Firestore records into
-// local state, keeping whichever record has the longer follow-up history
-// (the one actually being worked on).
+// local state. Completion progress must win over history length: an older
+// duplicate can have more imported/history events but still be on an earlier
+// follow-up stage, which would otherwise make a completed action disappear
+// after refresh.
 function dedupeQuotationsByDocNo(records) {
   const map = new Map();
   records.forEach((record) => {
     const key = String(record.docNo || record.id).trim().toLowerCase();
     const existing = map.get(key);
     if (!existing) { map.set(key, record); return; }
+    const progress = (item) => Number(item.completedStages ?? item.followupStage ?? 0) || 0;
     const existingScore = (existing.history || []).length;
     const newScore = (record.history || []).length;
-    if (newScore > existingScore) {
+    const shouldKeepNew = progress(record) > progress(existing)
+      || (progress(record) === progress(existing) && newScore > existingScore);
+    if (shouldKeepNew) {
       console.warn(`[AMS-FOLLOWUP] Duplicate quotation for docNo "${record.docNo}" — keeping ${record.id}, dropping ${existing.id}`);
       map.set(key, record);
     } else {
